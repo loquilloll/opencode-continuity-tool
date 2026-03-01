@@ -24,6 +24,7 @@ Provide a repo-local OpenCode custom tool that updates `docs/CONTINUITY.md` with
 - Appends new entries after the last bullet in each target section.
 - Creates `docs/CONTINUITY.md` from a template if missing.
 - Errors on missing or duplicate section headers.
+- Returns a patch-style preview that lists appended entries per section.
 
 ## Sample usage
 ```ts

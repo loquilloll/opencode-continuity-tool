@@ -67,7 +67,7 @@ describe("continuity_update", () => {
     const worktree = await createTempWorktree()
     await writeContinuity(worktree, FIXTURE)
 
-    await tool.execute(
+    const result = await tool.execute(
       {
         updates: [
           {
@@ -116,6 +116,13 @@ describe("continuity_update", () => {
     expect(planTimestamp).toMatch(
       /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$/
     )
+    expect(result).toContain("*** Begin Patch")
+    expect(result).toContain("*** Update File: docs/CONTINUITY.md")
+    expect(result).toContain("@@ ## [PLANS]")
+    expect(result).toContain("@@ ## [DECISIONS]")
+    expect(result).toContain("Sample continuity update via test.")
+    expect(result).toContain("Sample decision entry from test.")
+    expect(result).toContain("*** End Patch")
   })
 
   it("preserves input order for multiple entries in one section", async () => {
