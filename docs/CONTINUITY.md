@@ -9,6 +9,7 @@
 ## [PROGRESS]
 - 2026-03-01T18:26Z [USER] [plan:01-continuity-tool] Added testing plan details to docs/plans/01-continuity-tool.md.
 - 2026-03-01T18:29Z [CODE] [plan:01-continuity-tool] Implemented .opencode/tools/continuity_update.ts with validation and append-after-last-bullet behavior.
+- 2026-03-01T18:32Z [CODE] [plan:01-continuity-tool] Added usage notes in docs/continuity-tool.md.
 
 ## [DISCOVERIES]
 
