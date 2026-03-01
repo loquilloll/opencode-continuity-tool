@@ -137,9 +137,11 @@ export default tool({
     )
 
     const updatesBySection = new Map<Section, string[]>()
+    const appendedEntries: string[] = []
     args.updates.forEach((update) => {
       validateText(update.text)
       const entry = buildEntry(timestamp, update)
+      appendedEntries.push(entry)
       const entries = updatesBySection.get(update.section) ?? []
       entries.push(entry)
       updatesBySection.set(update.section, entries)
@@ -189,10 +191,28 @@ export default tool({
     await fs.writeFile(continuityPath, output, "utf8")
 
     const updatedSections = Array.from(updatesBySection.keys()).join(", ")
-    return `Updated ${args.updates.length} entr${
+    const summary = `Updated ${args.updates.length} entr${
       args.updates.length === 1 ? "y" : "ies"
     } across ${updatesBySection.size} section${
       updatesBySection.size === 1 ? "" : "s"
     } (${updatedSections}).`
+
+    const patchLines: string[] = [
+      "*** Begin Patch",
+      "*** Update File: docs/CONTINUITY.md",
+      `*** Summary: ${summary}`,
+    ]
+
+    SECTIONS.forEach((section) => {
+      const entries = updatesBySection.get(section)
+      if (!entries || entries.length === 0) return
+      patchLines.push(`@@ ## [${section}]`)
+      entries.forEach((entry) => {
+        patchLines.push(`+${entry}`)
+      })
+    })
+
+    patchLines.push("*** End Patch")
+    return patchLines.join("\n")
   },
 })
