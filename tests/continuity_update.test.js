@@ -2,7 +2,8 @@ import { describe, expect, it } from "bun:test"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
-import tool from "../.opencode/tools/continuity_update.ts"
+import { get_encoding } from "tiktoken"
+import tool from "../src/continuity_update.ts"
 
 const FIXTURE = `# CONTINUITY
 
@@ -20,20 +21,47 @@ const FIXTURE = `# CONTINUITY
 ## [OUTCOMES]
 `
 
+const DUMMY_FIXTURE_PATH = path.join(
+  process.cwd(),
+  "docs",
+  "CONTINUITY_DUMMY.md"
+)
+
 async function createTempWorktree() {
   return await fs.mkdtemp(path.join(os.tmpdir(), "continuity-tool-"))
 }
 
-async function writeContinuity(worktree, content) {
-  const docsPath = path.join(worktree, "docs")
-  await fs.mkdir(docsPath, { recursive: true })
-  await fs.writeFile(path.join(docsPath, "CONTINUITY.md"), content, "utf8")
+async function setupFixtureWorktree(fixtures) {
+  const worktree = await createTempWorktree()
+  await Promise.all(
+    Object.entries(fixtures).map(async ([relativePath, content]) => {
+      const targetPath = path.join(worktree, relativePath)
+      await fs.mkdir(path.dirname(targetPath), { recursive: true })
+      await fs.writeFile(targetPath, content, "utf8")
+    })
+  )
+  return worktree
 }
 
 async function readContinuity(worktree) {
   return await fs.readFile(
     path.join(worktree, "docs", "CONTINUITY.md"),
     "utf8"
+  )
+}
+
+async function readMemory(worktree) {
+  return await fs.readFile(path.join(worktree, "docs", "MEMORY.md"), "utf8")
+}
+
+async function readDummyFixture() {
+  const content = await fs.readFile(DUMMY_FIXTURE_PATH, "utf8")
+  if (content.includes("## [PLANS]")) {
+    return content
+  }
+  return content.replace(
+    /^\[(PLANS|DECISIONS|PROGRESS|DISCOVERIES|OUTCOMES)\]$/gm,
+    "## [$1]"
   )
 }
 
@@ -54,6 +82,32 @@ function getSectionLines(content, section) {
   return lines.slice(startIndex + 1, endIndex)
 }
 
+function getBulletLines(content, section) {
+  return getSectionLines(content, section).filter((line) =>
+    line.startsWith("- ")
+  )
+}
+
+function countTotalTokens(content, encoder) {
+  return encoder.encode(content).length
+}
+
+function expectSectionOrder(content) {
+  const lines = content.split(/\r?\n/)
+  const sections = [
+    "PLANS",
+    "DECISIONS",
+    "PROGRESS",
+    "DISCOVERIES",
+    "OUTCOMES",
+  ]
+  const indexes = sections.map((section) => lines.indexOf(`## [${section}]`))
+  indexes.forEach((index) => expect(index).toBeGreaterThanOrEqual(0))
+  for (let i = 1; i < indexes.length; i += 1) {
+    expect(indexes[i]).toBeGreaterThan(indexes[i - 1])
+  }
+}
+
 function extractTimestamp(line) {
   const match = line.match(/^\- (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z)/)
   if (!match) {
@@ -64,8 +118,9 @@ function extractTimestamp(line) {
 
 describe("continuity_update", () => {
   it("appends entries after last bullet with shared timestamp", async () => {
-    const worktree = await createTempWorktree()
-    await writeContinuity(worktree, FIXTURE)
+    const worktree = await setupFixtureWorktree({
+      "docs/CONTINUITY.md": FIXTURE,
+    })
 
     const result = await tool.execute(
       {
@@ -126,8 +181,9 @@ describe("continuity_update", () => {
   })
 
   it("preserves input order for multiple entries in one section", async () => {
-    const worktree = await createTempWorktree()
-    await writeContinuity(worktree, FIXTURE)
+    const worktree = await setupFixtureWorktree({
+      "docs/CONTINUITY.md": FIXTURE,
+    })
 
     await tool.execute(
       {
@@ -187,9 +243,10 @@ describe("continuity_update", () => {
   })
 
   it("fails when a required section header is missing", async () => {
-    const worktree = await createTempWorktree()
     const missingHeaderFixture = FIXTURE.replace("## [DISCOVERIES]\n\n", "")
-    await writeContinuity(worktree, missingHeaderFixture)
+    const worktree = await setupFixtureWorktree({
+      "docs/CONTINUITY.md": missingHeaderFixture,
+    })
 
     let error = null
     try {
@@ -216,8 +273,9 @@ describe("continuity_update", () => {
   })
 
   it("rejects multi-line text without mutating the file", async () => {
-    const worktree = await createTempWorktree()
-    await writeContinuity(worktree, FIXTURE)
+    const worktree = await setupFixtureWorktree({
+      "docs/CONTINUITY.md": FIXTURE,
+    })
     const before = await readContinuity(worktree)
 
     let error = null
@@ -242,5 +300,122 @@ describe("continuity_update", () => {
     expect(error).not.toBeNull()
     expect(error?.message).toContain("text must be a single line")
     expect(after).toBe(before)
+  })
+
+  it("skips compaction when under upper threshold", async () => {
+    const fixture = await readDummyFixture()
+    const encoder = get_encoding("cl100k_base")
+    const totalTokens = countTotalTokens(fixture, encoder)
+    encoder.free()
+    const upperThreshold = totalTokens + 1000
+    const worktree = await setupFixtureWorktree({
+      "docs/CONTINUITY.md": fixture,
+    })
+
+    await tool.execute(
+      {
+        updates: [
+          {
+            section: "PLANS",
+            provenance: "TOOL",
+            text: "No-op compaction test update.",
+          },
+        ],
+        compaction: {
+          upperTokenThreshold: upperThreshold,
+        },
+      },
+      { worktree }
+    )
+
+    const content = await readContinuity(worktree)
+    expect(content).toContain("No-op compaction test update.")
+    expect(content).not.toContain("Compaction triggered")
+    expectSectionOrder(content)
+
+    let memoryError = null
+    try {
+      await readMemory(worktree)
+    } catch (error) {
+      memoryError = error
+    }
+    expect(memoryError).not.toBeNull()
+  })
+
+  it("truncates over-limit sections and archives removed lines", async () => {
+    const fixture = await readDummyFixture()
+    const worktree = await setupFixtureWorktree({
+      "docs/CONTINUITY.md": fixture,
+    })
+
+    const firstPlanEntry = getBulletLines(fixture, "PLANS")[0]
+
+    const encoder = get_encoding("cl100k_base")
+    const fixtureTokens = countTotalTokens(fixture, encoder)
+    encoder.free()
+    const upperThreshold = 10000
+    const lowerThreshold = 5000
+    expect(fixtureTokens).toBeGreaterThan(upperThreshold)
+    await tool.execute(
+      {
+        updates: [
+          {
+            section: "PROGRESS",
+            provenance: "TOOL",
+            text: "Trigger compaction with update.",
+          },
+        ],
+      },
+      { worktree }
+    )
+
+    const content = await readContinuity(worktree)
+    const memory = await readMemory(worktree)
+    const resultEncoder = get_encoding("cl100k_base")
+    const totalTokens = countTotalTokens(content, resultEncoder)
+    resultEncoder.free()
+
+    expect(content).toContain("Compaction triggered")
+    expect(content).not.toContain(firstPlanEntry)
+    expect(memory).toContain(firstPlanEntry)
+    expect(totalTokens).toBeLessThanOrEqual(lowerThreshold)
+    expectSectionOrder(content)
+    expectSectionOrder(memory)
+  })
+
+  it("truncates oldest lines first when legacy total threshold exceeded", async () => {
+    const fixture = await readDummyFixture()
+    const encoder = get_encoding("cl100k_base")
+    const totalTokens = countTotalTokens(fixture, encoder)
+    encoder.free()
+
+    const totalThreshold = totalTokens - 1000
+    const worktree = await setupFixtureWorktree({
+      "docs/CONTINUITY.md": fixture,
+    })
+
+    const firstPlansEntry = getBulletLines(fixture, "PLANS")[0]
+
+    await tool.execute(
+      {
+        updates: [
+          {
+            section: "PROGRESS",
+            provenance: "TOOL",
+            text: "Trigger truncation for oldest-first test.",
+          },
+        ],
+        compaction: {
+          totalTokenThreshold: totalThreshold,
+        },
+      },
+      { worktree }
+    )
+
+    const content = await readContinuity(worktree)
+    const memory = await readMemory(worktree)
+
+    expect(content).not.toContain(firstPlansEntry)
+    expect(memory).toContain(firstPlansEntry)
   })
 })
