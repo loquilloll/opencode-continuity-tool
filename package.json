@@ -1,0 +1,8 @@
+{
+  "name": "opencode-continuity-tool",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "tiktoken": "^1.0.22"
+  }
+}

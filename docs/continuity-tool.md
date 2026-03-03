@@ -4,7 +4,7 @@
 Provide a repo-local OpenCode custom tool that updates `docs/CONTINUITY.md` with validated entries using a single shared UTC timestamp for each invocation.
 
 ## Tool location and name
-- File: `.opencode/tools/continuity_update.ts`
+- Tool implementation: `src/continuity_update.ts`
 - Tool name: `continuity_update`
 
 ## Entry format
@@ -25,6 +25,24 @@ Provide a repo-local OpenCode custom tool that updates `docs/CONTINUITY.md` with
 - Creates `docs/CONTINUITY.md` from a template if missing.
 - Errors on missing or duplicate section headers.
 - Returns a patch-style preview that lists appended entries per section.
+- When compaction is enabled, it triggers on the upper token threshold and truncates oldest entries to the lower target, archiving removed lines in `docs/MEMORY.md`.
+- Truncation honors per-section ratio weights (derived from CONTINUITY_DUMMY.md) by trimming oldest entries within each section to match the ratio-based token budgets.
+- Logs a compaction entry in `DISCOVERIES` when truncation occurs.
+
+## Compaction configuration
+Compaction settings are provided via the optional `compaction` argument.
+
+Defaults:
+- `enabled`: `true`
+- `upperTokenThreshold`: `10000`
+- `lowerTokenThreshold`: half of `upperTokenThreshold` (default `5000`)
+- `encoding`: `cl100k_base`
+Compaction triggers when total tokens in the entire document exceed the upper threshold and truncates until the total is at or below the lower threshold.
+`lowerTokenThreshold` is derived as half of `upperTokenThreshold` and must match that value if provided.
+Legacy `totalTokenThreshold` is accepted; when `upperTokenThreshold`/`lowerTokenThreshold` are not provided it maps to the upper threshold and derives the lower threshold as half.
+
+## MEMORY.md role
+`docs/MEMORY.md` is archival only and is not a source of truth. In Phase 1 compaction, the tool appends raw truncated lines under their original sections. `THEMES` and `MILESTONES` headers are reserved for later phases.
 
 ## Sample usage
 ```ts
@@ -42,6 +60,9 @@ continuity_update({
       text: "Use a local .opencode tool with schema validation.",
     },
   ],
+  compaction: {
+    upperTokenThreshold: 10000,
+  },
 })
 ```
 

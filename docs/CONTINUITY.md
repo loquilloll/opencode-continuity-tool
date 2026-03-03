@@ -2,6 +2,7 @@
 
 ## [PLANS]
 - 2026-03-01T18:15Z [USER] [plan:01-continuity-tool] Draft build plan for continuity tool at docs/plans/01-continuity-tool.md.
+- 2026-03-03T21:51Z [CODE] [plan:03-continuity-command-read] Added build plan for command-style continuity read mode at docs/plans/03-continuity-command-read.md.
 
 ## [DECISIONS]
 - 2026-03-01T18:22Z [USER] [plan:01-continuity-tool] Align plan to append new entries after the last bullet in each section.
@@ -17,11 +18,34 @@
 - 2026-03-01T18:56Z [CODE] [plan:01-continuity-tool] Added includeEntries option to return appended lines and updated docs/tests.
 - 2026-03-01T18:58Z [CODE] [plan:01-continuity-tool] Made appended entries output the default and updated docs/tests.
 - 2026-03-01T21:12Z [CODE] [plan:01-continuity-tool] Changed tool output to patch-style preview and updated docs/tests.
+- 2026-03-02T20:13Z [CODE] [plan:02-continuity-compaction] Updated compaction plan to derive per-section thresholds from a total threshold using ratio points computed from CONTINUITY_DUMMY.md with tiktoken, and added sample totals/derived thresholds.
+- 2026-03-02T20:42Z [CODE] [plan:02-continuity-compaction] Implemented Phase 1 compaction with per-section thresholds derived from total token budget using tiktoken, archived truncations to docs/MEMORY.md, updated tests to use CONTINUITY_DUMMY.md, and documented compaction defaults.
+- 2026-03-02T21:58Z [CODE] [plan:02-continuity-compaction] Moved continuity_update implementation to src/continuity_update.ts with a thin .opencode shim, updated tests and docs accordingly, and kept tiktoken-based Phase 1 compaction.
+- 2026-03-02T22:01Z [CODE] [plan:02-continuity-compaction] Removed .opencode tool shim so continuity_update now lives only in src/continuity_update.ts; opencode tests should deploy the tool temporarily then clean up.
+- 2026-03-03T13:00Z [CODE] [plan:02-continuity-compaction] Adjusted compaction to enforce a single total token threshold across all bullet lines (tiktoken per-line counts), updated tests to validate total token budget, and refreshed docs/plan accordingly.
+- 2026-03-03T15:43Z [CODE] [plan:02-continuity-compaction] Aligned compaction plan requirements to Phase 1 raw archival vs Phase 3 summaries and noted semantic config as Phase 2+.
+- 2026-03-03T15:56Z [CODE] [plan:02-continuity-compaction] Updated compaction plan to use upper trigger and lower target thresholds with legacy totalTokenThreshold mapping.
+- 2026-03-03T16:02Z [CODE] [plan:02-continuity-compaction] Implemented upper/lower compaction thresholds with legacy totalTokenThreshold mapping; updated tests and docs.
+- 2026-03-03T18:04Z [TOOL] [plan:02-continuity-compaction] Ran bun test tests/continuity_update.test.js with TMPDIR set to repo tmp; artifacts under tmp/continuity-tool-*/.
+- 2026-03-03T18:12Z [CODE] [plan:02-continuity-compaction] Updated compaction plan testing methodology to include TMPDIR hygiene and artifact location guidance.
+- 2026-03-03T18:18Z [CODE] [plan:02-continuity-compaction] Refactored tests to reuse a single fixture/worktree with serial execution and disabled compaction in non-compaction tests; updated plan testing methodology accordingly.
+- 2026-03-03T20:23Z [TOOL] [plan:02-continuity-compaction] Cleaned tmp/continuity-tool-* and ran only the compaction test with TMPDIR; reran with --timeout 20000 after initial timeout.
+- 2026-03-03T20:27Z [CODE] [plan:02-continuity-compaction] Adjusted compaction default so lower threshold derives as half of upper; updated docs and plan.
+- 2026-03-03T20:50Z [CODE] [plan:02-continuity-compaction] Adjusted compaction to truncate until total tokens are below the lower threshold and updated tests/docs wording.
+- 2026-03-03T21:03Z [CODE] [plan:02-continuity-compaction] Switched compaction token counting to full document content, enforced lower threshold as half of upper, and aligned tests/docs to strict below-lower truncation.
+- 2026-03-03T21:07Z [CODE] [plan:02-continuity-compaction] Adjusted compaction loop and tests/docs to accept at-or-below lower threshold targets.
+- 2026-03-03T21:12Z [CODE] [plan:02-continuity-compaction] Updated compaction test to use default thresholds (upper 10000, lower 5000) and plan test methodology accordingly.
+- 2026-03-03T21:13Z [CODE] [plan:02-continuity-compaction] Updated compaction plan to state lower threshold is always half of upper (default 10000/5000) and must match if provided.
+- 2026-03-03T21:19Z [CODE] [plan:02-continuity-compaction] Reinstated per-section ratio truncation based on CONTINUITY_DUMMY.md weights while keeping upper/lower thresholds.
+- 2026-03-03T21:29Z [CODE] [plan:02-continuity-compaction] Adjusted compaction cleanup to preserve per-section ratios while still meeting the lower threshold (ratio-guided trimming loop).
+- 2026-03-03T21:30Z [CODE] [plan:02-continuity-compaction] Updated compaction plan to preserve ratios during final trimming and clarified oldest-first expectations in tests.
+- 2026-03-03T21:34Z [CODE] [plan:02-continuity-compaction] Updated compaction plan with Phase 1 completion status and current behavior summary.
 
 ## [DISCOVERIES]
 - 2026-03-01T18:42Z [TOOL] [plan:01-continuity-tool] Opencode session invoked continuity_update and returned success.
 - 2026-03-01T18:47Z [TOOL] [plan:01-continuity-tool] Verified global continuity_update tool works from opencode run.
 - 2026-03-01T19:07Z [TOOL] [plan:01-continuity-tool] Verified appended entries are displayed in tool output.
 - 2026-03-01T21:14Z [TOOL] [plan:01-continuity-tool] Verified patch-style tool output in opencode run.
+- 2026-03-03T20:23Z [TOOL] [plan:02-continuity-compaction] bun test single compaction case can hit default 5000ms timeout; --timeout 20000 avoids the failure.
 
 ## [OUTCOMES]
