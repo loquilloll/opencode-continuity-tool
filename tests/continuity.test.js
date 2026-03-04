@@ -3,7 +3,7 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { get_encoding } from "tiktoken"
-import tool from "../src/continuity_update.ts"
+import tool from "../src/continuity.js"
 
 const FIXTURE = `# CONTINUITY
 
@@ -19,6 +19,27 @@ const FIXTURE = `# CONTINUITY
 ## [DISCOVERIES]
 
 ## [OUTCOMES]
+`
+
+const READ_FIXTURE = `# CONTINUITY
+
+## [PLANS]
+- 2026-02-01T00:00Z [USER] [plan:baseline] First plan entry.
+- 2026-02-02T00:00Z [USER] [plan:baseline] Second plan entry.
+
+## [DECISIONS]
+- 2026-02-01T00:00Z [CODE] First decision entry.
+- 2026-02-02T00:00Z [CODE] Second decision entry.
+
+## [PROGRESS]
+- 2026-02-01T00:00Z [TOOL] First progress entry.
+- 2026-02-02T00:00Z [TOOL] Second progress entry.
+
+## [DISCOVERIES]
+- 2026-02-01T00:00Z [TOOL] First discovery entry.
+
+## [OUTCOMES]
+- 2026-02-01T00:00Z [CODE] First outcome entry.
 `
 
 const DUMMY_FIXTURE_PATH = path.join(
@@ -116,7 +137,7 @@ function extractTimestamp(line) {
   return match[1]
 }
 
-describe("continuity_update", () => {
+describe("continuity", () => {
   it("appends entries after last bullet with shared timestamp", async () => {
     const worktree = await setupFixtureWorktree({
       "docs/CONTINUITY.md": FIXTURE,
@@ -124,6 +145,7 @@ describe("continuity_update", () => {
 
     const result = await tool.execute(
       {
+        command: "update",
         updates: [
           {
             section: "PLANS",
@@ -187,6 +209,7 @@ describe("continuity_update", () => {
 
     await tool.execute(
       {
+        command: "update",
         updates: [
           {
             section: "PROGRESS",
@@ -222,6 +245,7 @@ describe("continuity_update", () => {
 
     await tool.execute(
       {
+        command: "update",
         updates: [
           {
             section: "PLANS",
@@ -252,6 +276,7 @@ describe("continuity_update", () => {
     try {
       await tool.execute(
         {
+          command: "update",
           updates: [
             {
               section: "PLANS",
@@ -282,6 +307,7 @@ describe("continuity_update", () => {
     try {
       await tool.execute(
         {
+          command: "update",
           updates: [
             {
               section: "PLANS",
@@ -302,6 +328,40 @@ describe("continuity_update", () => {
     expect(after).toBe(before)
   })
 
+  it("reads latest entries per section without mutating file", async () => {
+    const worktree = await setupFixtureWorktree({
+      "docs/CONTINUITY.md": READ_FIXTURE,
+    })
+    const before = await readContinuity(worktree)
+
+    const output = await tool.execute(
+      {
+        command: "read",
+        read: {
+          linesPerSection: 1,
+        },
+      },
+      { worktree }
+    )
+
+    expect(output).toContain("## [PLANS]")
+    expect(output).toContain("Second plan entry.")
+    expect(output).not.toContain("First plan entry.")
+    expect(output).toContain("## [DECISIONS]")
+    expect(output).toContain("Second decision entry.")
+    expect(output).not.toContain("First decision entry.")
+    expect(output).toContain("## [PROGRESS]")
+    expect(output).toContain("Second progress entry.")
+    expect(output).not.toContain("First progress entry.")
+    expect(output).toContain("## [DISCOVERIES]")
+    expect(output).toContain("First discovery entry.")
+    expect(output).toContain("## [OUTCOMES]")
+    expect(output).toContain("First outcome entry.")
+
+    const after = await readContinuity(worktree)
+    expect(after).toBe(before)
+  })
+
   it("skips compaction when under upper threshold", async () => {
     const fixture = await readDummyFixture()
     const encoder = get_encoding("cl100k_base")
@@ -314,6 +374,7 @@ describe("continuity_update", () => {
 
     await tool.execute(
       {
+        command: "update",
         updates: [
           {
             section: "PLANS",
@@ -358,6 +419,7 @@ describe("continuity_update", () => {
     expect(fixtureTokens).toBeGreaterThan(upperThreshold)
     await tool.execute(
       {
+        command: "update",
         updates: [
           {
             section: "PROGRESS",
@@ -398,6 +460,7 @@ describe("continuity_update", () => {
 
     await tool.execute(
       {
+        command: "update",
         updates: [
           {
             section: "PROGRESS",
