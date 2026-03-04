@@ -1,7 +1,7 @@
 import { tool } from "@opencode-ai/plugin"
 import fs from "fs/promises"
 import path from "path"
-import { get_encoding, type TiktokenEncoding } from "tiktoken"
+import { get_encoding } from "tiktoken"
 
 const SECTIONS = [
   "PLANS",
@@ -9,7 +9,7 @@ const SECTIONS = [
   "PROGRESS",
   "DISCOVERIES",
   "OUTCOMES",
-] as const
+]
 
 const PROVENANCE = [
   "USER",
@@ -17,15 +17,13 @@ const PROVENANCE = [
   "TOOL",
   "ASSUMPTION",
   "UNCONFIRMED",
-] as const
+]
 
 const DEFAULT_UPPER_TOKEN_THRESHOLD = 10000
 const DEFAULT_ENCODING = "cl100k_base"
+const DEFAULT_READ_LINES_PER_SECTION = 5
 
-type Section = (typeof SECTIONS)[number]
-type Provenance = (typeof PROVENANCE)[number]
-
-const SECTION_RATIO_WEIGHTS: Record<Section, number> = {
+const SECTION_RATIO_WEIGHTS = {
   PLANS: 4339,
   DECISIONS: 5175,
   PROGRESS: 22471,
@@ -36,28 +34,6 @@ const SECTION_RATIO_TOTAL = Object.values(SECTION_RATIO_WEIGHTS).reduce(
   (sum, value) => sum + value,
   0
 )
-
-type CompactionInput = {
-  enabled?: boolean
-  upperTokenThreshold?: number
-  lowerTokenThreshold?: number
-  totalTokenThreshold?: number
-  encoding?: string
-}
-
-type CompactionConfig = {
-  enabled: boolean
-  upperTokenThreshold: number
-  lowerTokenThreshold: number
-  encoding: string
-}
-
-type ContinuityUpdate = {
-  section: Section
-  provenance: Provenance
-  plan?: string
-  text: string
-}
 
 const TEMPLATE = `# CONTINUITY
 
@@ -92,7 +68,7 @@ const MEMORY_TEMPLATE = `# MEMORY
 const HEADER_PATTERN =
   /^## \[(PLANS|DECISIONS|PROGRESS|DISCOVERIES|OUTCOMES)\]\s*$/
 
-function validateText(text: string) {
+function validateText(text) {
   if (text.includes("\n") || text.includes("\r")) {
     throw new Error("text must be a single line")
   }
@@ -101,12 +77,12 @@ function validateText(text: string) {
   }
 }
 
-function buildEntry(timestamp: string, update: ContinuityUpdate) {
+function buildEntry(timestamp, update) {
   const planSegment = update.plan ? ` [plan:${update.plan}]` : ""
   return `- ${timestamp} [${update.provenance}]${planSegment} ${update.text}`
 }
 
-function resolveCompactionConfig(input?: CompactionInput): CompactionConfig {
+function resolveCompactionConfig(input) {
   const enabled = input?.enabled ?? true
   const hasUpper = typeof input?.upperTokenThreshold === "number"
   const hasLower = typeof input?.lowerTokenThreshold === "number"
@@ -125,13 +101,8 @@ function resolveCompactionConfig(input?: CompactionInput): CompactionConfig {
     1,
     Math.floor(upperTokenThreshold / 2)
   )
-  if (
-    hasLower &&
-    input?.lowerTokenThreshold !== derivedLowerTokenThreshold
-  ) {
-    throw new Error(
-      "lowerTokenThreshold must be half of upperTokenThreshold"
-    )
+  if (hasLower && input?.lowerTokenThreshold !== derivedLowerTokenThreshold) {
+    throw new Error("lowerTokenThreshold must be half of upperTokenThreshold")
   }
   const lowerTokenThreshold = derivedLowerTokenThreshold
 
@@ -155,14 +126,23 @@ function resolveCompactionConfig(input?: CompactionInput): CompactionConfig {
   }
 }
 
-function findSectionIndexes(lines: string[]) {
-  const indexBySection = new Map<Section, number>()
+function resolveReadConfig(read) {
+  const linesPerSection =
+    read?.linesPerSection ?? DEFAULT_READ_LINES_PER_SECTION
+  if (!Number.isInteger(linesPerSection) || linesPerSection <= 0) {
+    throw new Error("read.linesPerSection must be a positive integer")
+  }
+  return { linesPerSection }
+}
+
+function findSectionIndexes(lines) {
+  const indexBySection = new Map()
 
   lines.forEach((line, index) => {
     const match = line.match(HEADER_PATTERN)
     if (!match) return
 
-    const section = match[1] as Section
+    const section = match[1]
     if (indexBySection.has(section)) {
       throw new Error(`Duplicate section header: ${section}`)
     }
@@ -177,7 +157,7 @@ function findSectionIndexes(lines: string[]) {
   return indexBySection
 }
 
-function getSectionBoundaries(lines: string[]) {
+function getSectionBoundaries(lines) {
   const sectionIndexes = findSectionIndexes(lines)
   const boundaries = SECTIONS.map((section) => {
     const startIndex = sectionIndexes.get(section) ?? 0
@@ -194,11 +174,7 @@ function getSectionBoundaries(lines: string[]) {
   return boundaries
 }
 
-function computeInsertIndex(
-  lines: string[],
-  startIndex: number,
-  endIndex: number
-) {
+function computeInsertIndex(lines, startIndex, endIndex) {
   let insertIndex = startIndex + 1
   for (let i = startIndex + 1; i < endIndex; i += 1) {
     if (lines[i].startsWith("- ")) {
@@ -208,16 +184,8 @@ function computeInsertIndex(
   return insertIndex
 }
 
-function insertEntriesBySection(
-  lines: string[],
-  orderedSections: Array<{ section: Section; startIndex: number; endIndex: number }>,
-  entriesBySection: Map<Section, string[]>
-) {
-  const operations: Array<{
-    section: Section
-    insertIndex: number
-    entries: string[]
-  }> = []
+function insertEntriesBySection(lines, orderedSections, entriesBySection) {
+  const operations = []
 
   orderedSections.forEach((current) => {
     const entries = entriesBySection.get(current.section)
@@ -228,7 +196,11 @@ function insertEntriesBySection(
       current.startIndex,
       current.endIndex
     )
-    operations.push({ section: current.section, insertIndex, entries })
+    operations.push({
+      section: current.section,
+      insertIndex,
+      entries,
+    })
   })
 
   operations.sort((a, b) => b.insertIndex - a.insertIndex)
@@ -237,50 +209,56 @@ function insertEntriesBySection(
   })
 }
 
-async function ensureContinuityFile(filePath: string) {
+async function ensureContinuityFile(filePath) {
   try {
     return await fs.readFile(filePath, "utf8")
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      await fs.mkdir(path.dirname(filePath), { recursive: true })
-      await fs.writeFile(filePath, TEMPLATE, "utf8")
-      return TEMPLATE
+    if (error && typeof error === "object" && "code" in error) {
+      if (error.code === "ENOENT") {
+        await fs.mkdir(path.dirname(filePath), { recursive: true })
+        await fs.writeFile(filePath, TEMPLATE, "utf8")
+        return TEMPLATE
+      }
     }
     throw error
   }
 }
 
-async function ensureMemoryFile(filePath: string) {
+async function readContinuityFile(filePath) {
   try {
     return await fs.readFile(filePath, "utf8")
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      await fs.mkdir(path.dirname(filePath), { recursive: true })
-      await fs.writeFile(filePath, MEMORY_TEMPLATE, "utf8")
-      return MEMORY_TEMPLATE
+    if (error && typeof error === "object" && "code" in error) {
+      if (error.code === "ENOENT") {
+        throw new Error("docs/CONTINUITY.md not found")
+      }
     }
     throw error
   }
 }
 
-type BulletEntry = {
-  section: Section
-  line: string
-  index: number
-  tokens: number
+async function ensureMemoryFile(filePath) {
+  try {
+    return await fs.readFile(filePath, "utf8")
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error) {
+      if (error.code === "ENOENT") {
+        await fs.mkdir(path.dirname(filePath), { recursive: true })
+        await fs.writeFile(filePath, MEMORY_TEMPLATE, "utf8")
+        return MEMORY_TEMPLATE
+      }
+    }
+    throw error
+  }
 }
 
-function getBulletEntries(
-  lines: string[],
-  encoder: ReturnType<typeof get_encoding>,
-  hasTrailingNewline: boolean
-) {
-  const entries: BulletEntry[] = []
-  let current: Section | null = null
+function getBulletEntries(lines, encoder, hasTrailingNewline) {
+  const entries = []
+  let current = null
   lines.forEach((line, index) => {
     const match = line.match(HEADER_PATTERN)
     if (match) {
-      current = match[1] as Section
+      current = match[1]
       return
     }
     if (current && line.startsWith("- ")) {
@@ -293,17 +271,14 @@ function getBulletEntries(
   return entries
 }
 
-function countTokensForContent(
-  content: string,
-  encoder: ReturnType<typeof get_encoding>
-) {
+function countTokensForContent(content, encoder) {
   if (content.length === 0) return 0
   return encoder.encode(content).length
 }
 
-function computeSectionBudgets(availableTokens: number) {
-  const budgets = new Map<Section, number>()
-  const remainders: Array<{ section: Section; remainder: number }> = []
+function computeSectionBudgets(availableTokens) {
+  const budgets = new Map()
+  const remainders = []
   let allocated = 0
 
   SECTIONS.forEach((section) => {
@@ -329,13 +304,13 @@ function computeSectionBudgets(availableTokens: number) {
 }
 
 function truncateEntriesToTargetThreshold(
-  lines: string[],
-  entries: BulletEntry[],
-  targetThreshold: number,
-  encoder: ReturnType<typeof get_encoding>,
-  hasTrailingNewline: boolean
+  lines,
+  entries,
+  targetThreshold,
+  encoder,
+  hasTrailingNewline
 ) {
-  const removedBySection = new Map<Section, string[]>()
+  const removedBySection = new Map()
   if (entries.length === 0) {
     return removedBySection
   }
@@ -350,14 +325,14 @@ function truncateEntriesToTargetThreshold(
   const availableBulletTokens = Math.max(0, targetThreshold - headerTokens)
   const budgets = computeSectionBudgets(availableBulletTokens)
 
-  const entriesBySection = new Map<Section, BulletEntry[]>()
+  const entriesBySection = new Map()
   entries.forEach((entry) => {
     const existing = entriesBySection.get(entry.section) ?? []
     existing.push(entry)
     entriesBySection.set(entry.section, existing)
   })
 
-  const indexesToRemove: number[] = []
+  const indexesToRemove = []
   entriesBySection.forEach((sectionEntries, section) => {
     const budget = budgets.get(section) ?? 0
     let sectionTokens = sectionEntries.reduce(
@@ -393,8 +368,8 @@ function truncateEntriesToTargetThreshold(
       break
     }
 
-    const sectionTokens = new Map<Section, number>()
-    const sectionEntries = new Map<Section, BulletEntry[]>()
+    const sectionTokens = new Map()
+    const sectionEntries = new Map()
     SECTIONS.forEach((section) => {
       sectionTokens.set(section, 0)
       sectionEntries.set(section, [])
@@ -410,17 +385,14 @@ function truncateEntriesToTargetThreshold(
       0
     )
     const currentHeaderTokens = Math.max(0, tokenCount - bulletTokensTotal)
-    const availableBulletTokens = Math.max(
-      0,
-      targetThreshold - currentHeaderTokens
-    )
+    const availableBulletTokens = Math.max(0, targetThreshold - currentHeaderTokens)
     const ratioBudgets = computeSectionBudgets(availableBulletTokens)
 
-    let targetSection: Section | null = null
+    let targetSection = null
     let maxOverage = Number.NEGATIVE_INFINITY
     SECTIONS.forEach((section) => {
-      const entries = sectionEntries.get(section) ?? []
-      if (entries.length === 0) return
+      const sectionEntryList = sectionEntries.get(section) ?? []
+      if (sectionEntryList.length === 0) return
       const overage =
         (sectionTokens.get(section) ?? 0) - (ratioBudgets.get(section) ?? 0)
       if (overage > maxOverage) {
@@ -432,8 +404,8 @@ function truncateEntriesToTargetThreshold(
     if (!targetSection || maxOverage <= 0) {
       let maxTokens = Number.NEGATIVE_INFINITY
       SECTIONS.forEach((section) => {
-        const entries = sectionEntries.get(section) ?? []
-        if (entries.length === 0) return
+        const sectionEntryList = sectionEntries.get(section) ?? []
+        if (sectionEntryList.length === 0) return
         const tokens = sectionTokens.get(section) ?? 0
         if (tokens > maxTokens) {
           maxTokens = tokens
@@ -464,9 +436,25 @@ function truncateEntriesToTargetThreshold(
   return removedBySection
 }
 
+function collectSectionTail(lines, boundary, linesPerSection) {
+  const entries = []
+  for (let i = boundary.startIndex + 1; i < boundary.endIndex; i += 1) {
+    const line = lines[i]
+    if (line.startsWith("- ")) {
+      entries.push(line)
+    }
+  }
+  if (linesPerSection >= entries.length) {
+    return entries
+  }
+  return entries.slice(entries.length - linesPerSection)
+}
+
 export default tool({
-  description: "Update docs/CONTINUITY.md with validated, timestamped entries",
+  description:
+    "Read or update docs/CONTINUITY.md with validated, timestamped entries",
   args: {
+    command: tool.schema.enum(["read", "update"]),
     updates: tool.schema
       .array(
         tool.schema.object({
@@ -479,7 +467,7 @@ export default tool({
           text: tool.schema.string().min(1).max(400),
         })
       )
-      .min(1),
+      .optional(),
     compaction: tool.schema
       .object({
         enabled: tool.schema.boolean().optional(),
@@ -489,22 +477,61 @@ export default tool({
         encoding: tool.schema.string().optional(),
       })
       .optional(),
+    read: tool.schema
+      .object({
+        linesPerSection: tool.schema.number().int().positive().optional(),
+      })
+      .optional(),
   },
   async execute(args, context) {
     if (!context.worktree) {
       throw new Error("Missing worktree in tool context")
     }
 
-    const timestamp = `${new Date().toISOString().slice(0, 16)}Z`
     const continuityPath = path.join(
       context.worktree,
       "docs",
       "CONTINUITY.md"
     )
+
+    if (args.command === "read") {
+      if (args.updates && args.updates.length > 0) {
+        throw new Error("updates are not supported for read command")
+      }
+      if (args.compaction) {
+        throw new Error("compaction is not supported for read command")
+      }
+      const { linesPerSection } = resolveReadConfig(args.read)
+
+      const content = await readContinuityFile(continuityPath)
+      const lines = content.split(/\r?\n/)
+      const orderedSections = getSectionBoundaries(lines)
+      const outputLines = []
+
+      orderedSections.forEach((boundary, index) => {
+        outputLines.push(`## [${boundary.section}]`)
+        const entries = collectSectionTail(lines, boundary, linesPerSection)
+        entries.forEach((entry) => outputLines.push(entry))
+        if (index < orderedSections.length - 1) {
+          outputLines.push("")
+        }
+      })
+
+      return outputLines.join("\n")
+    }
+
+    if (args.read) {
+      throw new Error("read options are only supported for read command")
+    }
+    if (!args.updates || args.updates.length === 0) {
+      throw new Error("updates must be provided for update command")
+    }
+
+    const timestamp = `${new Date().toISOString().slice(0, 16)}Z`
     const memoryPath = path.join(context.worktree, "docs", "MEMORY.md")
     const compactionConfig = resolveCompactionConfig(args.compaction)
 
-    const updatesBySection = new Map<Section, string[]>()
+    const updatesBySection = new Map()
     args.updates.forEach((update) => {
       validateText(update.text)
       const entry = buildEntry(timestamp, update)
@@ -517,16 +544,16 @@ export default tool({
     const hasTrailingNewline = content.endsWith("\n")
     const lines = content.split(/\r?\n/)
 
-    let orderedSections = getSectionBoundaries(lines)
+    const orderedSections = getSectionBoundaries(lines)
     insertEntriesBySection(lines, orderedSections, updatesBySection)
 
-    const compactionEntriesBySection = new Map<Section, string[]>()
-    let removedBySection = new Map<Section, string[]>()
-    let memoryPatchLines: string[] | null = null
+    const compactionEntriesBySection = new Map()
+    let removedBySection = new Map()
+    let memoryPatchLines = null
     let compactionTriggered = false
 
     if (compactionConfig.enabled) {
-      const encoder = get_encoding(compactionConfig.encoding as TiktokenEncoding)
+      const encoder = get_encoding(compactionConfig.encoding)
       try {
         const totalTokens = countTokensForContent(lines.join("\n"), encoder)
 
@@ -536,7 +563,11 @@ export default tool({
             "- " +
             `${timestamp} [TOOL] Compaction triggered: exceeded upper token threshold; truncated oldest entries to at or below lower target; archived to docs/MEMORY.md.`
           compactionEntriesBySection.set("DISCOVERIES", [compactionEntry])
-          insertEntriesBySection(lines, orderedSections, compactionEntriesBySection)
+          insertEntriesBySection(
+            lines,
+            orderedSections,
+            compactionEntriesBySection
+          )
 
           const entriesAfter = getBulletEntries(
             lines,
@@ -585,9 +616,9 @@ export default tool({
             SECTIONS.forEach((section) => {
               const entries = removedBySection.get(section)
               if (!entries || entries.length === 0) return
-              memoryPatchLines?.push(`@@ ## [${section}]`)
+              memoryPatchLines.push(`@@ ## [${section}]`)
               entries.forEach((entry) => {
-                memoryPatchLines?.push(`+${entry}`)
+                memoryPatchLines.push(`+${entry}`)
               })
             })
             memoryPatchLines.push("*** End Patch")
@@ -608,7 +639,7 @@ export default tool({
 
     await fs.writeFile(continuityPath, output, "utf8")
 
-    const addedEntriesBySection = new Map<Section, string[]>()
+    const addedEntriesBySection = new Map()
     updatesBySection.forEach((entries, section) => {
       addedEntriesBySection.set(section, [...entries])
     })
@@ -637,7 +668,7 @@ export default tool({
       } into docs/MEMORY.md.`
     }
 
-    const patchLines: string[] = [
+    const patchLines = [
       "*** Begin Patch",
       "*** Update File: docs/CONTINUITY.md",
       `*** Summary: ${summary}`,

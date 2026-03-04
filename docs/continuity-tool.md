@@ -1,11 +1,11 @@
-# Continuity Update Tool
+# Continuity Tool
 
 ## Purpose
-Provide a repo-local OpenCode custom tool that updates `docs/CONTINUITY.md` with validated entries using a single shared UTC timestamp for each invocation.
+Provide a repo-local OpenCode custom tool that reads or updates `docs/CONTINUITY.md` with validated entries using a single shared UTC timestamp for each update invocation.
 
 ## Tool location and name
-- Tool implementation: `src/continuity_update.ts`
-- Tool name: `continuity_update`
+- Tool implementation: `src/continuity.js`
+- Tool name: `continuity`
 
 ## Entry format
 ```
@@ -19,7 +19,11 @@ Provide a repo-local OpenCode custom tool that updates `docs/CONTINUITY.md` with
 - `plan` slug: lowercase alphanumeric, dot, or hyphen (regex: `^[a-z0-9][a-z0-9.-]*$`).
 - `text` must be single-line, non-blank, and 1 to 400 characters.
 
-## Behavior
+## Commands
+- `command: "update"` appends entries and may trigger compaction.
+- `command: "read"` returns the latest lines from each section without mutating files.
+
+## Behavior (update)
 - Uses one UTC timestamp for all entries in a single call.
 - Appends new entries after the last bullet in each target section.
 - Creates `docs/CONTINUITY.md` from a template if missing.
@@ -28,6 +32,11 @@ Provide a repo-local OpenCode custom tool that updates `docs/CONTINUITY.md` with
 - When compaction is enabled, it triggers on the upper token threshold and truncates oldest entries to the lower target, archiving removed lines in `docs/MEMORY.md`.
 - Truncation honors per-section ratio weights (derived from CONTINUITY_DUMMY.md) by trimming oldest entries within each section to match the ratio-based token budgets.
 - Logs a compaction entry in `DISCOVERIES` when truncation occurs.
+
+## Behavior (read)
+- Returns the latest N bullet lines per section in canonical section order.
+- Defaults to 5 lines per section when `read.linesPerSection` is omitted.
+- Does not create or modify any files.
 
 ## Compaction configuration
 Compaction settings are provided via the optional `compaction` argument.
@@ -44,9 +53,10 @@ Legacy `totalTokenThreshold` is accepted; when `upperTokenThreshold`/`lowerToken
 ## MEMORY.md role
 `docs/MEMORY.md` is archival only and is not a source of truth. In Phase 1 compaction, the tool appends raw truncated lines under their original sections. `THEMES` and `MILESTONES` headers are reserved for later phases.
 
-## Sample usage
+## Sample usage (update)
 ```ts
-continuity_update({
+continuity({
+  command: "update",
   updates: [
     {
       section: "PLANS",
@@ -62,6 +72,16 @@ continuity_update({
   ],
   compaction: {
     upperTokenThreshold: 10000,
+  },
+})
+```
+
+## Sample usage (read)
+```ts
+continuity({
+  command: "read",
+  read: {
+    linesPerSection: 5,
   },
 })
 ```

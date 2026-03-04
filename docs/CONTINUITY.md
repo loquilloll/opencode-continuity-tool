@@ -6,6 +6,7 @@
 
 ## [DECISIONS]
 - 2026-03-01T18:22Z [USER] [plan:01-continuity-tool] Align plan to append new entries after the last bullet in each section.
+- 2026-03-03T22:03Z [CODE] [plan:03-continuity-command-read] Switched continuity tool to command-based read/update interface and renamed implementation to src/continuity.js.
 
 ## [PROGRESS]
 - 2026-03-01T18:26Z [USER] [plan:01-continuity-tool] Added testing plan details to docs/plans/01-continuity-tool.md.
@@ -40,6 +41,7 @@
 - 2026-03-03T21:29Z [CODE] [plan:02-continuity-compaction] Adjusted compaction cleanup to preserve per-section ratios while still meeting the lower threshold (ratio-guided trimming loop).
 - 2026-03-03T21:30Z [CODE] [plan:02-continuity-compaction] Updated compaction plan to preserve ratios during final trimming and clarified oldest-first expectations in tests.
 - 2026-03-03T21:34Z [CODE] [plan:02-continuity-compaction] Updated compaction plan with Phase 1 completion status and current behavior summary.
+- 2026-03-03T22:03Z [CODE] [plan:03-continuity-command-read] Implemented continuity read mode with per-section tail output and updated tests/docs to use the new command interface.
 
 ## [DISCOVERIES]
 - 2026-03-01T18:42Z [TOOL] [plan:01-continuity-tool] Opencode session invoked continuity_update and returned success.
@@ -47,5 +49,6 @@
 - 2026-03-01T19:07Z [TOOL] [plan:01-continuity-tool] Verified appended entries are displayed in tool output.
 - 2026-03-01T21:14Z [TOOL] [plan:01-continuity-tool] Verified patch-style tool output in opencode run.
 - 2026-03-03T20:23Z [TOOL] [plan:02-continuity-compaction] bun test single compaction case can hit default 5000ms timeout; --timeout 20000 avoids the failure.
+- 2026-03-03T22:03Z [TOOL] [plan:03-continuity-command-read] bun test tests/continuity.test.js passed.
 
 ## [OUTCOMES]
