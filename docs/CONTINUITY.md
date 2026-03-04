@@ -42,6 +42,8 @@
 - 2026-03-03T21:30Z [CODE] [plan:02-continuity-compaction] Updated compaction plan to preserve ratios during final trimming and clarified oldest-first expectations in tests.
 - 2026-03-03T21:34Z [CODE] [plan:02-continuity-compaction] Updated compaction plan with Phase 1 completion status and current behavior summary.
 - 2026-03-03T22:03Z [CODE] [plan:03-continuity-command-read] Implemented continuity read mode with per-section tail output and updated tests/docs to use the new command interface.
+- 2026-03-04T12:20Z [TOOL] [plan:03-continuity-command-read] Updated global opencode tools to continuity.js and removed continuity_update.ts.
+- 2026-03-04T13:41Z [CODE] [plan:03-continuity-command-read] Updated continuity tool description to document read/update commands and arguments.
 
 ## [DISCOVERIES]
 - 2026-03-01T18:42Z [TOOL] [plan:01-continuity-tool] Opencode session invoked continuity_update and returned success.

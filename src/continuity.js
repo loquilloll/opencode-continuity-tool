@@ -452,7 +452,7 @@ function collectSectionTail(lines, boundary, linesPerSection) {
 
 export default tool({
   description:
-    "Read or update docs/CONTINUITY.md with validated, timestamped entries",
+    "Read or update docs/CONTINUITY.md. command: \"read\" returns latest bullet lines per section (read.linesPerSection, default 5). command: \"update\" appends validated entries (updates[]) and optional compaction.",
   args: {
     command: tool.schema.enum(["read", "update"]),
     updates: tool.schema
