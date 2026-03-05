@@ -7,6 +7,7 @@
 ## [DECISIONS]
 - 2026-03-01T18:22Z [USER] [plan:01-continuity-tool] Align plan to append new entries after the last bullet in each section.
 - 2026-03-03T22:03Z [CODE] [plan:03-continuity-command-read] Switched continuity tool to command-based read/update interface and renamed implementation to src/continuity.js.
+- 2026-03-05T15:49Z [USER] Target commit identity for history normalization is loquilloll <loquilloll@users.noreply.github.com> from local git config.
 
 ## [PROGRESS]
 - 2026-03-01T18:26Z [USER] [plan:01-continuity-tool] Added testing plan details to docs/plans/01-continuity-tool.md.
@@ -45,6 +46,8 @@
 - 2026-03-04T12:20Z [TOOL] [plan:03-continuity-command-read] Updated global opencode tools to continuity.js and removed continuity_update.ts.
 - 2026-03-04T13:41Z [CODE] [plan:03-continuity-command-read] Updated continuity tool description to document read/update commands and arguments.
 - 2026-03-05T13:27Z [CODE] Created comprehensive README.md covering project purpose, features, installation, usage (read/update commands), API reference, compaction details, validation, testing, project structure, and roadmap.
+- 2026-03-05T15:43Z [TOOL] Ran pre-push author normalization flow on main: verified commit authors against HEAD identity, created backup/pre-author-rewrite-20260305T154256Z, executed git filter-branch, and pushed origin/main.
+- 2026-03-05T15:49Z [TOOL] Rewrote main history author+committer metadata to loquilloll <loquilloll@users.noreply.github.com> using git filter-branch and force-updated origin/main with --force-with-lease.
 
 ## [DISCOVERIES]
 - 2026-03-01T18:42Z [TOOL] [plan:01-continuity-tool] Opencode session invoked continuity_update and returned success.
@@ -53,5 +56,7 @@
 - 2026-03-01T21:14Z [TOOL] [plan:01-continuity-tool] Verified patch-style tool output in opencode run.
 - 2026-03-03T20:23Z [TOOL] [plan:02-continuity-compaction] bun test single compaction case can hit default 5000ms timeout; --timeout 20000 avoids the failure.
 - 2026-03-03T22:03Z [TOOL] [plan:03-continuity-command-read] bun test tests/continuity.test.js passed.
+- 2026-03-05T15:43Z [TOOL] All commits already used Sanchez, Alvin <alvin.sanchez@claritev.com>; filter-branch reported refs/heads/main unchanged and push returned Everything up-to-date.
+- 2026-03-05T15:49Z [TOOL] Author rewrite required stashing local docs/CONTINUITY.md edits before filter-branch; stash pop restored the working tree changes after remote update.
 
 ## [OUTCOMES]
