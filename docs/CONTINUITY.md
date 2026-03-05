@@ -44,6 +44,7 @@
 - 2026-03-03T22:03Z [CODE] [plan:03-continuity-command-read] Implemented continuity read mode with per-section tail output and updated tests/docs to use the new command interface.
 - 2026-03-04T12:20Z [TOOL] [plan:03-continuity-command-read] Updated global opencode tools to continuity.js and removed continuity_update.ts.
 - 2026-03-04T13:41Z [CODE] [plan:03-continuity-command-read] Updated continuity tool description to document read/update commands and arguments.
+- 2026-03-05T13:27Z [CODE] Created comprehensive README.md covering project purpose, features, installation, usage (read/update commands), API reference, compaction details, validation, testing, project structure, and roadmap.
 
 ## [DISCOVERIES]
 - 2026-03-01T18:42Z [TOOL] [plan:01-continuity-tool] Opencode session invoked continuity_update and returned success.
