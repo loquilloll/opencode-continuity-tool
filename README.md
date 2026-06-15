@@ -57,33 +57,43 @@ The tool manages `docs/CONTINUITY.md` with five canonical sections:
 # CONTINUITY
 
 ## [PLANS]
-- 2026-03-01T18:22Z [USER] [plan:01-continuity-tool] Next steps and checklists.
+- [id:plans-202603011822-user-2d3f9d713e4c] 2026-03-01T18:22Z [USER] [plan:01-continuity-tool] Next steps and checklists.
 
 ## [DECISIONS]
-- 2026-03-01T18:22Z [CODE] Architectural choices and rationale.
+- [id:decisions-202603011822-code-e81db3c11d10] 2026-03-01T18:22Z [CODE] Architectural choices and rationale.
 
 ## [PROGRESS]
-- 2026-03-01T18:22Z [TOOL] Course changes and why.
+- [id:progress-202603011822-tool-8edacabeec94] 2026-03-01T18:22Z [TOOL] Course changes and why.
 
 ## [DISCOVERIES]
-- 2026-03-01T18:22Z [TOOL] Notable behaviors, tradeoffs, bugs.
+- [id:discoveries-202603011822-tool-15767297c53d] 2026-03-01T18:22Z [TOOL] Notable behaviors, tradeoffs, bugs.
 
 ## [OUTCOMES]
-- 2026-03-01T18:22Z [CODE] Completion summaries.
+- [id:outcomes-202603011822-code-330d1194f0f8] 2026-03-01T18:22Z [CODE] Completion summaries.
 ```
 
 ### Entry Format
 
 ```
-- YYYY-MM-DDTHH:MMZ [PROVENANCE] [plan:slug] <text>
+- [id:<memory-id>] YYYY-MM-DDTHH:MMZ [PROVENANCE] [plan:slug] <text>
 ```
+
+Legacy bullets without `[id:...]` remain readable. The tool derives a deterministic memory ID from the section, timestamp, provenance, optional plan slug, and normalized text when parsing older entries.
 
 | Field | Description | Required |
 |---|---|---|
+| Memory ID | Stable identity for the memory entry. New writes include it explicitly; legacy entries derive it on read. | Yes for new writes |
 | Timestamp | ISO 8601 UTC, minute precision. Auto-generated. | Yes |
 | Provenance | One of `USER`, `CODE`, `TOOL`, `ASSUMPTION`, `UNCONFIRMED` | Yes |
 | Plan slug | Lowercase alphanumeric with dots/hyphens (e.g., `01-continuity-tool`) | No |
 | Text | Single-line, non-blank, 1-400 characters | Yes |
+
+### Memory identity and content hashes
+
+- New continuity writes include a stable `[id:<memory-id>]` prefix.
+- Legacy entries are still supported and receive deterministic derived IDs during parsing.
+- The tool normalizes memory text before hashing by collapsing whitespace and line-ending differences; whitespace-only changes are treated as equivalent.
+- Content hashes use the format `sha256:<hex>` so future retrieval phases can suppress unchanged entries within a session.
 
 ## Usage
 
@@ -104,10 +114,10 @@ continuity({
 
 ```
 ## [PLANS]
-- 2026-03-03T22:03Z [CODE] [plan:03-continuity-command-read] Implemented read mode.
+- [id:plans-202603032203-code-2ddff2b6e54d] 2026-03-03T22:03Z [CODE] [plan:03-continuity-command-read] Implemented read mode.
 
 ## [DECISIONS]
-- 2026-03-03T22:03Z [CODE] [plan:03-continuity-command-read] Switched to command-based interface.
+- [id:decisions-202603032203-code-3dcbf5bb8470] 2026-03-03T22:03Z [CODE] [plan:03-continuity-command-read] Switched to command-based interface.
 
 ## [PROGRESS]
 ...
@@ -152,9 +162,9 @@ continuity({
 *** Update File: docs/CONTINUITY.md
 *** Summary: Updated 2 entries across 2 sections (PLANS, DECISIONS).
 @@ ## [PLANS]
-+- 2026-03-01T18:22Z [USER] [plan:01-continuity-tool] Implement continuity update tool with shared UTC timestamp.
++- [id:plans-202603011822-user-7d58e7e7791d] 2026-03-01T18:22Z [USER] [plan:01-continuity-tool] Implement continuity update tool with shared UTC timestamp.
 @@ ## [DECISIONS]
-+- 2026-03-01T18:22Z [CODE] Use a local .opencode tool with schema validation.
++- [id:decisions-202603011822-code-72fba5410749] 2026-03-01T18:22Z [CODE] Use a local .opencode tool with schema validation.
 *** End Patch
 ```
 
@@ -178,15 +188,19 @@ continuity({
 | `plan` | `string?` | Optional slug matching `^[a-z0-9][a-z0-9.-]*$` |
 | `text` | `string` | Single-line, non-blank, 1-400 characters |
 
+The written bullet line also includes an internal memory ID and supports deterministic derived IDs for legacy lines when parsing existing continuity content.
+
 ### Compaction Object
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | `boolean` | `true` | Enable/disable automatic compaction. |
 | `upperTokenThreshold` | `integer` | `10000` | Token count that triggers compaction. |
-| `lowerTokenThreshold` | `integer` | `upperTokenThreshold / 2` | Target token count after compaction. Must be exactly half of upper. |
+| `lowerTokenThreshold` | `integer` | `upperTokenThreshold / 2` | Target token count after compaction. The effective value is always derived from `upperTokenThreshold`. |
 | `totalTokenThreshold` | `integer` | -- | Legacy alias for `upperTokenThreshold`. |
 | `encoding` | `string` | `"cl100k_base"` | tiktoken encoding name. |
+
+Threshold precedence is: explicit `upperTokenThreshold`, else legacy `totalTokenThreshold`, else inferred `lowerTokenThreshold * 2`, else default `10000`.
 
 ### ReadConfig Object
 
@@ -243,10 +257,12 @@ The tool rejects invalid input and leaves the file unchanged when validation fai
 | Missing section header in existing file | `Missing section header(s): <names>` |
 | Duplicate section header | `Duplicate section header: <name>` |
 | `updates` provided with `read` command | `updates are not supported for read command` |
-| `compaction` provided with `read` command | `compaction is not supported for read command` |
 | Empty `updates` with `update` command | `updates must be provided for update command` |
-| `lowerTokenThreshold` not half of upper | `lowerTokenThreshold must be half of upperTokenThreshold` |
+| Text begins with bracketed metadata-like token | `text must not start with a bracketed token` |
 | Missing `context.worktree` | `Missing worktree in tool context` |
+
+Compatibility behaviors:
+`compaction` on `read` is ignored, `read` on `update` is ignored, and `lowerTokenThreshold` is normalized from `upperTokenThreshold` when needed.
 
 ## Testing
 
@@ -266,9 +282,13 @@ bun test tests/continuity.test.js --timeout 20000
 | Create file when missing | Template with all 5 sections is auto-created |
 | Missing section header | Rejects update and leaves file unchanged |
 | Multi-line text rejection | Rejects and leaves file unchanged |
+| Bracket-token text rejection | Prevents metadata injection through leading text tokens |
+| Legacy and ID-prefixed parser coverage | Supports both formats, status/pin parsing, and malformed-line rejection |
+| Hash normalization stability | Whitespace-only differences hash equivalently |
 | Read latest entries per section | Returns tail of each section without mutation |
 | Skip compaction under threshold | No MEMORY.md created when under budget |
 | Truncation and archival | Oldest entries removed, archived to MEMORY.md, tokens within budget |
+| Mixed-format compaction | Compaction continues to handle legacy and ID-prefixed entries |
 | Legacy threshold compatibility | `totalTokenThreshold` maps correctly to upper/lower |
 
 ## Project Structure
@@ -287,13 +307,14 @@ opencode-continuity-tool/
       01-continuity-tool.md          # Initial build plan
       02-continuity-compaction.md    # Compaction feature plan
       03-continuity-command-read.md  # Read command plan
+      04-layered-continuity-memory.md # Layered memory build plan
   package.json
   bun.lock
 ```
 
 ## Roadmap
 
-The compaction system is designed for incremental enhancement:
+The compaction roadmap below is scoped to the original archival flow. The broader layered-memory rollout is tracked separately in `docs/plans/04-layered-continuity-memory.md`.
 
 | Phase | Status | Description |
 |---|---|---|

@@ -1,7 +1,14 @@
 import { tool } from "@opencode-ai/plugin"
+import { createHash } from "crypto"
 import fs from "fs/promises"
 import path from "path"
-import { get_encoding } from "tiktoken"
+ 
+const tiktoken = await import("tiktoken")
+
+const get_encoding =
+  tiktoken.get_encoding ??
+  tiktoken.default?.get_encoding ??
+  tiktoken["module.exports"]?.get_encoding
 
 const SECTIONS = [
   "PLANS",
@@ -68,6 +75,9 @@ const MEMORY_TEMPLATE = `# MEMORY
 const HEADER_PATTERN =
   /^## \[(PLANS|DECISIONS|PROGRESS|DISCOVERIES|OUTCOMES)\]\s*$/
 
+const ENTRY_PATTERN =
+  /^- (?:\[id:(?<memoryId>[^\]]+)\] )?(?<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z) (?<rest>.+)$/
+
 function validateText(text) {
   if (text.includes("\n") || text.includes("\r")) {
     throw new Error("text must be a single line")
@@ -75,11 +85,128 @@ function validateText(text) {
   if (text.trim().length === 0) {
     throw new Error("text must not be blank")
   }
+  if (text.trimStart().startsWith("[")) {
+    throw new Error("text must not start with a bracketed token")
+  }
+}
+
+function normalizeMemoryContent(content) {
+  return content.replace(/\r\n?/g, "\n").replace(/\s+/g, " ").trim()
+}
+
+function hashMemoryContent(content) {
+  return `sha256:${createHash("sha256")
+    .update(normalizeMemoryContent(content), "utf8")
+    .digest("hex")}`
+}
+
+function slugifyMemorySegment(value) {
+  const slug = value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+  return slug || "entry"
+}
+
+function deriveMemoryId({ section, timestamp, provenance, plan, text }) {
+  const normalizedText = normalizeMemoryContent(text)
+  const compactTimestamp = (timestamp ?? "undated").replace(/[^0-9]/g, "") || "undated"
+  const hash = hashMemoryContent(
+    [section, timestamp ?? "", provenance ?? "", plan ?? "", normalizedText].join("|")
+  ).slice("sha256:".length, "sha256:".length + 12)
+
+  return [
+    slugifyMemorySegment(section ?? "entry"),
+    compactTimestamp,
+    slugifyMemorySegment(provenance ?? "unknown"),
+    hash,
+  ].join("-")
+}
+
+function parseContinuityEntry(line, section = null) {
+  const match = line.match(ENTRY_PATTERN)
+  if (!match?.groups) {
+    return null
+  }
+
+  const { memoryId, timestamp, rest } = match.groups
+  const metadata = {
+    provenance: null,
+    plan: null,
+    status: null,
+    pinned: false,
+  }
+
+  let remaining = rest
+  const textPrefixes = []
+  while (remaining.startsWith("[")) {
+    const tokenEnd = remaining.indexOf("]")
+    if (tokenEnd === -1) break
+    const token = remaining.slice(1, tokenEnd)
+    remaining = remaining.slice(tokenEnd + 1)
+    if (remaining.startsWith(" ")) {
+      remaining = remaining.slice(1)
+    }
+
+    if (PROVENANCE.includes(token)) {
+      metadata.provenance = token
+      continue
+    }
+    if (token.startsWith("plan:")) {
+      metadata.plan = token.slice("plan:".length)
+      continue
+    }
+    if (token.startsWith("status:")) {
+      metadata.status = token.slice("status:".length)
+      continue
+    }
+    if (token === "pin" || token === "pinned") {
+      metadata.pinned = true
+      continue
+    }
+
+    textPrefixes.push(`[${token}]`)
+  }
+
+  const text = [...textPrefixes, remaining].join(" ").trim()
+  if (!metadata.provenance || text.length === 0) {
+    return null
+  }
+
+  const resolvedSection = section ?? "UNKNOWN"
+  const resolvedMemoryId =
+    memoryId ??
+    deriveMemoryId({
+      section: resolvedSection,
+      timestamp,
+      provenance: metadata.provenance,
+      plan: metadata.plan,
+      text,
+    })
+
+  return {
+    line,
+    section: resolvedSection,
+    memoryId: resolvedMemoryId,
+    timestamp,
+    provenance: metadata.provenance,
+    plan: metadata.plan,
+    status: metadata.status,
+    pinned: metadata.pinned,
+    text,
+    normalizedContent: normalizeMemoryContent(text),
+    contentHash: hashMemoryContent(text),
+    isLegacy: !memoryId,
+  }
 }
 
 function buildEntry(timestamp, update) {
+  const memoryId = deriveMemoryId({
+    section: update.section,
+    timestamp,
+    provenance: update.provenance,
+    plan: update.plan,
+    text: update.text,
+  })
   const planSegment = update.plan ? ` [plan:${update.plan}]` : ""
-  return `- ${timestamp} [${update.provenance}]${planSegment} ${update.text}`
+  return `- [id:${memoryId}] ${timestamp} [${update.provenance}]${planSegment} ${update.text}`
 }
 
 function resolveCompactionConfig(input) {
@@ -101,9 +228,6 @@ function resolveCompactionConfig(input) {
     1,
     Math.floor(upperTokenThreshold / 2)
   )
-  if (hasLower && input?.lowerTokenThreshold !== derivedLowerTokenThreshold) {
-    throw new Error("lowerTokenThreshold must be half of upperTokenThreshold")
-  }
   const lowerTokenThreshold = derivedLowerTokenThreshold
 
   if (!Number.isInteger(upperTokenThreshold) || upperTokenThreshold <= 0) {
@@ -450,6 +574,14 @@ function collectSectionTail(lines, boundary, linesPerSection) {
   return entries.slice(entries.length - linesPerSection)
 }
 
+export {
+  buildEntry,
+  deriveMemoryId,
+  hashMemoryContent,
+  normalizeMemoryContent,
+  parseContinuityEntry,
+}
+
 export default tool({
   description:
     "Read or update docs/CONTINUITY.md. command: \"read\" returns latest bullet lines per section (read.linesPerSection, default 5). command: \"update\" appends validated entries (updates[]) and optional compaction.",
@@ -498,9 +630,6 @@ export default tool({
       if (args.updates && args.updates.length > 0) {
         throw new Error("updates are not supported for read command")
       }
-      if (args.compaction) {
-        throw new Error("compaction is not supported for read command")
-      }
       const { linesPerSection } = resolveReadConfig(args.read)
 
       const content = await readContinuityFile(continuityPath)
@@ -520,9 +649,6 @@ export default tool({
       return outputLines.join("\n")
     }
 
-    if (args.read) {
-      throw new Error("read options are only supported for read command")
-    }
     if (!args.updates || args.updates.length === 0) {
       throw new Error("updates must be provided for update command")
     }
@@ -559,9 +685,11 @@ export default tool({
 
         if (totalTokens > compactionConfig.upperTokenThreshold) {
           compactionTriggered = true
-          const compactionEntry =
-            "- " +
-            `${timestamp} [TOOL] Compaction triggered: exceeded upper token threshold; truncated oldest entries to at or below lower target; archived to docs/MEMORY.md.`
+          const compactionEntry = buildEntry(timestamp, {
+            section: "DISCOVERIES",
+            provenance: "TOOL",
+            text: "Compaction triggered: exceeded upper token threshold; truncated oldest entries to at or below lower target; archived to docs/MEMORY.md.",
+          })
           compactionEntriesBySection.set("DISCOVERIES", [compactionEntry])
           insertEntriesBySection(
             lines,
