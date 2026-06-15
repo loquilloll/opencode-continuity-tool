@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+
+# Continuity / memory runtime data (present in every project using the tool)
+docs
+docs_temp
+
+# Ecosystem sibling checkouts
+downstream-repos
+
+# Tooling caches
+.ast-grep/
+.ignore

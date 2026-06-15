@@ -1,6 +1,7 @@
 import { tool } from "@opencode-ai/plugin"
 import { createHash } from "crypto"
 import fs from "fs/promises"
+import os from "os"
 import path from "path"
  
 const tiktoken = await import("tiktoken")
@@ -29,6 +30,9 @@ const PROVENANCE = [
 const DEFAULT_UPPER_TOKEN_THRESHOLD = 10000
 const DEFAULT_ENCODING = "cl100k_base"
 const DEFAULT_READ_LINES_PER_SECTION = 5
+const DEFAULT_READ_MODE = "delta"
+const SESSION_LEDGER_VERSION = 1
+const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 
 const SECTION_RATIO_WEIGHTS = {
   PLANS: 4339,
@@ -209,6 +213,13 @@ function buildEntry(timestamp, update) {
   return `- [id:${memoryId}] ${timestamp} [${update.provenance}]${planSegment} ${update.text}`
 }
 
+function formatReadEntry(entry) {
+  const planSegment = entry.plan ? ` [plan:${entry.plan}]` : ""
+  const statusSegment = entry.status ? ` [status:${entry.status}]` : ""
+  const pinSegment = entry.pinned ? " [pin]" : ""
+  return `- ${entry.timestamp} [${entry.provenance}]${planSegment}${statusSegment}${pinSegment} ${entry.text}`
+}
+
 function resolveCompactionConfig(input) {
   const enabled = input?.enabled ?? true
   const hasUpper = typeof input?.upperTokenThreshold === "number"
@@ -253,10 +264,98 @@ function resolveCompactionConfig(input) {
 function resolveReadConfig(read) {
   const linesPerSection =
     read?.linesPerSection ?? DEFAULT_READ_LINES_PER_SECTION
+  const mode = read?.mode ?? DEFAULT_READ_MODE
+  const sessionId = read?.sessionId
+  const includePinned = read?.includePinned ?? false
+  const includeUnresolved = read?.includeUnresolved ?? false
+
   if (!Number.isInteger(linesPerSection) || linesPerSection <= 0) {
     throw new Error("read.linesPerSection must be a positive integer")
   }
-  return { linesPerSection }
+  if (mode !== "tail" && mode !== "delta") {
+    throw new Error('read.mode must be either "tail" or "delta"')
+  }
+  if (sessionId != null && !SESSION_ID_PATTERN.test(sessionId)) {
+    throw new Error("read.sessionId must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+  }
+  if (mode === "delta" && !sessionId) {
+    throw new Error("read.sessionId must be provided for delta mode")
+  }
+
+  return {
+    linesPerSection,
+    mode,
+    sessionId,
+    includePinned,
+    includeUnresolved,
+  }
+}
+
+function hashWorktreePath(worktree) {
+  return createHash("sha256").update(worktree, "utf8").digest("hex")
+}
+
+function resolveLedgerPath(worktree, sessionId) {
+  return path.join(
+    os.tmpdir(),
+    "opencode-continuity-ledger",
+    hashWorktreePath(worktree),
+    `${sessionId}.json`
+  )
+}
+
+async function loadSessionLedger(filePath, worktree, sessionId) {
+  try {
+    const content = await fs.readFile(filePath, "utf8")
+    const parsed = JSON.parse(content)
+    if (
+      parsed &&
+      parsed.version === SESSION_LEDGER_VERSION &&
+      typeof parsed.seen === "object" &&
+      parsed.seen !== null
+    ) {
+      return parsed
+    }
+    throw new Error(`Invalid session ledger format: ${filePath}`)
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      return {
+        version: SESSION_LEDGER_VERSION,
+        worktreeHash: hashWorktreePath(worktree),
+        sessionId,
+        seen: {},
+      }
+    }
+    if (error && typeof error === "object" && "code" in error) {
+      if (error.code === "ENOENT") {
+        return {
+          version: SESSION_LEDGER_VERSION,
+          worktreeHash: hashWorktreePath(worktree),
+          sessionId,
+          seen: {},
+        }
+      }
+    }
+    if (
+      error instanceof Error &&
+      error.message === `Invalid session ledger format: ${filePath}`
+    ) {
+      return {
+        version: SESSION_LEDGER_VERSION,
+        worktreeHash: hashWorktreePath(worktree),
+        sessionId,
+        seen: {},
+      }
+    }
+    throw error
+  }
+}
+
+async function saveSessionLedger(filePath, ledger) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true })
+  const tempPath = `${filePath}.tmp`
+  await fs.writeFile(tempPath, JSON.stringify(ledger, null, 2), "utf8")
+  await fs.rename(tempPath, filePath)
 }
 
 function findSectionIndexes(lines) {
@@ -565,7 +664,8 @@ function collectSectionTail(lines, boundary, linesPerSection) {
   for (let i = boundary.startIndex + 1; i < boundary.endIndex; i += 1) {
     const line = lines[i]
     if (line.startsWith("- ")) {
-      entries.push(line)
+      const parsedEntry = parseContinuityEntry(line, boundary.section)
+      entries.push(parsedEntry ? formatReadEntry(parsedEntry) : line)
     }
   }
   if (linesPerSection >= entries.length) {
@@ -574,17 +674,89 @@ function collectSectionTail(lines, boundary, linesPerSection) {
   return entries.slice(entries.length - linesPerSection)
 }
 
+function collectParsedEntries(lines, orderedSections) {
+  const entries = []
+  const seenExactEntries = new Set()
+
+  orderedSections.forEach((boundary) => {
+    for (let i = boundary.startIndex + 1; i < boundary.endIndex; i += 1) {
+      const line = lines[i]
+      if (!line.startsWith("- ")) {
+        continue
+      }
+
+      const parsedEntry = parseContinuityEntry(line, boundary.section)
+      if (!parsedEntry) {
+        continue
+      }
+
+      const exactKey = `${parsedEntry.memoryId}|${parsedEntry.contentHash}`
+      if (seenExactEntries.has(exactKey)) {
+        continue
+      }
+      seenExactEntries.add(exactKey)
+      entries.push(parsedEntry)
+    }
+  })
+
+  return entries
+}
+
+function buildSectionedReadOutput(entriesBySection) {
+  const outputLines = []
+
+  SECTIONS.forEach((section, index) => {
+    outputLines.push(`## [${section}]`)
+    const entries = entriesBySection.get(section) ?? []
+    entries.forEach((entry) => outputLines.push(entry))
+    if (index < SECTIONS.length - 1) {
+      outputLines.push("")
+    }
+  })
+
+  return outputLines.join("\n")
+}
+
+function collectDeltaEntries(parsedEntries, ledger, readConfig) {
+  const entriesBySection = new Map(SECTIONS.map((section) => [section, []]))
+  let includedCount = 0
+
+  parsedEntries.forEach((entry) => {
+    const previousHash = ledger.seen[entry.memoryId]
+    const changed = previousHash !== entry.contentHash
+    const includePinned = readConfig.includePinned && entry.pinned
+    const includeUnresolved =
+      readConfig.includeUnresolved && entry.status === "unresolved"
+
+    if (!changed && !includePinned && !includeUnresolved) {
+      return
+    }
+
+    const sectionEntries = entriesBySection.get(entry.section) ?? []
+    sectionEntries.push(formatReadEntry(entry))
+    entriesBySection.set(entry.section, sectionEntries)
+    ledger.seen[entry.memoryId] = entry.contentHash
+    includedCount += 1
+  })
+
+  return { entriesBySection, includedCount }
+}
+
 export {
   buildEntry,
   deriveMemoryId,
   hashMemoryContent,
+  hashWorktreePath,
+  loadSessionLedger,
   normalizeMemoryContent,
   parseContinuityEntry,
+  resolveLedgerPath,
+  saveSessionLedger,
 }
 
 export default tool({
   description:
-    "Read or update docs/CONTINUITY.md. command: \"read\" returns latest bullet lines per section (read.linesPerSection, default 5). command: \"update\" appends validated entries (updates[]) and optional compaction.",
+    "Read or update docs/CONTINUITY.md. READ: read.mode defaults to \"delta\", which REQUIRES read.sessionId and returns only new/changed memories for that session; to read recent entries without a session, set read.mode=\"tail\" (returns the latest lines per section, no sessionId needed). UPDATE: appends validated entries (updates[]) and optional compaction.",
   args: {
     command: tool.schema.enum(["read", "update"]),
     updates: tool.schema
@@ -612,6 +784,18 @@ export default tool({
     read: tool.schema
       .object({
         linesPerSection: tool.schema.number().int().positive().optional(),
+        mode: tool.schema
+          .enum(["tail", "delta"])
+          .optional()
+          .describe(
+            '"delta" (default) returns only new/changed memories since the last read and REQUIRES sessionId; "tail" returns the latest linesPerSection entries per section (no sessionId needed)'
+          ),
+        sessionId: tool.schema
+          .string()
+          .optional()
+          .describe("REQUIRED when mode is delta (the default); omit for tail mode"),
+        includePinned: tool.schema.boolean().optional(),
+        includeUnresolved: tool.schema.boolean().optional(),
       })
       .optional(),
   },
@@ -630,23 +814,42 @@ export default tool({
       if (args.updates && args.updates.length > 0) {
         throw new Error("updates are not supported for read command")
       }
-      const { linesPerSection } = resolveReadConfig(args.read)
+      const readConfig = resolveReadConfig(args.read)
 
       const content = await readContinuityFile(continuityPath)
       const lines = content.split(/\r?\n/)
       const orderedSections = getSectionBoundaries(lines)
-      const outputLines = []
 
-      orderedSections.forEach((boundary, index) => {
-        outputLines.push(`## [${boundary.section}]`)
-        const entries = collectSectionTail(lines, boundary, linesPerSection)
-        entries.forEach((entry) => outputLines.push(entry))
-        if (index < orderedSections.length - 1) {
-          outputLines.push("")
-        }
-      })
+      if (readConfig.mode === "tail") {
+        const entriesBySection = new Map()
+        orderedSections.forEach((boundary) => {
+          entriesBySection.set(
+            boundary.section,
+            collectSectionTail(lines, boundary, readConfig.linesPerSection)
+          )
+        })
+        return buildSectionedReadOutput(entriesBySection)
+      }
 
-      return outputLines.join("\n")
+      const parsedEntries = collectParsedEntries(lines, orderedSections)
+      const ledgerPath = resolveLedgerPath(context.worktree, readConfig.sessionId)
+      const ledger = await loadSessionLedger(
+        ledgerPath,
+        context.worktree,
+        readConfig.sessionId
+      )
+      const { entriesBySection, includedCount } = collectDeltaEntries(
+        parsedEntries,
+        ledger,
+        readConfig
+      )
+
+      if (includedCount === 0) {
+        return "No new or changed task memories."
+      }
+
+      await saveSessionLedger(ledgerPath, ledger)
+      return buildSectionedReadOutput(entriesBySection)
     }
 
     if (!args.updates || args.updates.length === 0) {
@@ -675,16 +878,12 @@ export default tool({
 
     const compactionEntriesBySection = new Map()
     let removedBySection = new Map()
-    let memoryPatchLines = null
-    let compactionTriggered = false
-
     if (compactionConfig.enabled) {
       const encoder = get_encoding(compactionConfig.encoding)
       try {
         const totalTokens = countTokensForContent(lines.join("\n"), encoder)
 
         if (totalTokens > compactionConfig.upperTokenThreshold) {
-          compactionTriggered = true
           const compactionEntry = buildEntry(timestamp, {
             section: "DISCOVERIES",
             provenance: "TOOL",
@@ -727,29 +926,6 @@ export default tool({
             }
             await fs.writeFile(memoryPath, memoryOutput, "utf8")
 
-            const removedCount = Array.from(removedBySection.values()).reduce(
-              (sum, entries) => sum + entries.length,
-              0
-            )
-            const removedSections = Array.from(removedBySection.keys()).join(", ")
-            const memorySummary = `Archived ${removedCount} entr${
-              removedCount === 1 ? "y" : "ies"
-            } into docs/MEMORY.md (${removedSections}).`
-
-            memoryPatchLines = [
-              "*** Begin Patch",
-              "*** Update File: docs/MEMORY.md",
-              `*** Summary: ${memorySummary}`,
-            ]
-            SECTIONS.forEach((section) => {
-              const entries = removedBySection.get(section)
-              if (!entries || entries.length === 0) return
-              memoryPatchLines.push(`@@ ## [${section}]`)
-              entries.forEach((entry) => {
-                memoryPatchLines.push(`+${entry}`)
-              })
-            })
-            memoryPatchLines.push("*** End Patch")
           }
         }
       } finally {
@@ -767,55 +943,6 @@ export default tool({
 
     await fs.writeFile(continuityPath, output, "utf8")
 
-    const addedEntriesBySection = new Map()
-    updatesBySection.forEach((entries, section) => {
-      addedEntriesBySection.set(section, [...entries])
-    })
-    compactionEntriesBySection.forEach((entries, section) => {
-      const existing = addedEntriesBySection.get(section) ?? []
-      addedEntriesBySection.set(section, existing.concat(entries))
-    })
-
-    const totalAdded = Array.from(addedEntriesBySection.values()).reduce(
-      (sum, entries) => sum + entries.length,
-      0
-    )
-    const updatedSections = Array.from(addedEntriesBySection.keys()).join(", ")
-    let summary = `Updated ${totalAdded} entr${
-      totalAdded === 1 ? "y" : "ies"
-    } across ${addedEntriesBySection.size} section${
-      addedEntriesBySection.size === 1 ? "" : "s"
-    } (${updatedSections}).`
-    if (compactionTriggered && removedBySection.size > 0) {
-      const removedCount = Array.from(removedBySection.values()).reduce(
-        (sum, entries) => sum + entries.length,
-        0
-      )
-      summary += ` Compaction archived ${removedCount} entr${
-        removedCount === 1 ? "y" : "ies"
-      } into docs/MEMORY.md.`
-    }
-
-    const patchLines = [
-      "*** Begin Patch",
-      "*** Update File: docs/CONTINUITY.md",
-      `*** Summary: ${summary}`,
-    ]
-
-    SECTIONS.forEach((section) => {
-      const entries = addedEntriesBySection.get(section)
-      if (!entries || entries.length === 0) return
-      patchLines.push(`@@ ## [${section}]`)
-      entries.forEach((entry) => {
-        patchLines.push(`+${entry}`)
-      })
-    })
-
-    patchLines.push("*** End Patch")
-    if (memoryPatchLines) {
-      patchLines.push("")
-      patchLines.push(...memoryPatchLines)
-    }
-    return patchLines.join("\n")
+    return ""
   },
 })

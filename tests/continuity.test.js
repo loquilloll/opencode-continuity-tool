@@ -3,10 +3,13 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import tool, {
+  buildEntry,
   deriveMemoryId,
   hashMemoryContent,
+  loadSessionLedger,
   normalizeMemoryContent,
   parseContinuityEntry,
+  resolveLedgerPath,
 } from "../src/continuity.js"
 
 const tiktoken = await import("tiktoken")
@@ -71,6 +74,25 @@ const MIXED_READ_FIXTURE = `# CONTINUITY
 - [id:outcomes-202602020000z-code-deadbeef1234] 2026-02-02T00:00Z [CODE] Id-prefixed outcome entry.
 `
 
+const DELTA_FIXTURE = `# CONTINUITY
+
+## [PLANS]
+- [id:plans-202602010000z-user-aa11aa11aa11] 2026-02-01T00:00Z [USER] [plan:baseline] Shared plan memory.
+- [id:plans-202602010000z-user-aa11aa11aa11] 2026-02-01T00:00Z [USER] [plan:baseline] Shared plan memory.
+
+## [DECISIONS]
+- [id:decisions-202602010000z-code-bb22bb22bb22] 2026-02-01T00:00Z [CODE] First decision memory.
+
+## [PROGRESS]
+- [id:progress-202602010000z-tool-cc33cc33cc33] 2026-02-01T00:00Z [TOOL] [pin] Pinned progress memory.
+
+## [DISCOVERIES]
+- [id:discoveries-202602010000z-tool-dd44dd44dd44] 2026-02-01T00:00Z [TOOL] [status:unresolved] Unresolved discovery memory.
+
+## [OUTCOMES]
+- [id:outcomes-202602010000z-code-ee55ee55ee55] 2026-02-01T00:00Z [CODE] Completed outcome memory.
+`
+
 const DUMMY_FIXTURE_PATH = path.join(
   process.cwd(),
   "docs",
@@ -102,6 +124,11 @@ async function readContinuity(worktree) {
 
 async function readMemory(worktree) {
   return await fs.readFile(path.join(worktree, "docs", "MEMORY.md"), "utf8")
+}
+
+async function readLedger(worktree, sessionId) {
+  const ledgerPath = resolveLedgerPath(worktree, sessionId)
+  return JSON.parse(await fs.readFile(ledgerPath, "utf8"))
 }
 
 async function readDummyFixture() {
@@ -251,13 +278,7 @@ describe("continuity", () => {
         text: "Sample decision entry from test.",
       })
     )
-    expect(result).toContain("*** Begin Patch")
-    expect(result).toContain("*** Update File: docs/CONTINUITY.md")
-    expect(result).toContain("@@ ## [PLANS]")
-    expect(result).toContain("@@ ## [DECISIONS]")
-    expect(result).toContain("Sample continuity update via test.")
-    expect(result).toContain("Sample decision entry from test.")
-    expect(result).toContain("*** End Patch")
+    expect(result).toBe("")
   })
 
   it("preserves input order for multiple entries in one section", async () => {
@@ -522,6 +543,27 @@ describe("continuity", () => {
     expect(content).toContain("[id:")
   })
 
+  it("round-trips builder output through the parser", () => {
+    const timestamp = "2026-02-05T12:34Z"
+    const line = buildEntry(timestamp, {
+      section: "PLANS",
+      provenance: "USER",
+      plan: "round.trip",
+      text: "Round-trip continuity entry.",
+    })
+
+    const parsed = parseContinuityEntry(line, "PLANS")
+
+    expect(parsed).not.toBeNull()
+    expect(parsed?.memoryId).toBe(extractMemoryId(line))
+    expect(parsed?.timestamp).toBe(timestamp)
+    expect(parsed?.provenance).toBe("USER")
+    expect(parsed?.plan).toBe("round.trip")
+    expect(parsed?.text).toBe("Round-trip continuity entry.")
+    expect(parsed?.contentHash).toBe(hashMemoryContent("Round-trip continuity entry."))
+    expect(parsed?.isLegacy).toBe(false)
+  })
+
   it("reads latest entries per section without mutating file", async () => {
     const worktree = await setupFixtureWorktree({
       "docs/CONTINUITY.md": READ_FIXTURE,
@@ -532,6 +574,7 @@ describe("continuity", () => {
       {
         command: "read",
         read: {
+          mode: "tail",
           linesPerSection: 1,
         },
       },
@@ -566,6 +609,7 @@ describe("continuity", () => {
       {
         command: "read",
         read: {
+          mode: "tail",
           linesPerSection: 2,
         },
       },
@@ -573,12 +617,301 @@ describe("continuity", () => {
     )
 
     expect(output).toContain("Legacy plan entry.")
-    expect(output).toContain("[id:plans-202602020000z-user-abcd1234ef56]")
+    expect(output).not.toContain("[id:")
     expect(output).toContain("Id-prefixed progress entry.")
     expect(output).toContain("Legacy discovery entry.")
 
     const after = await readContinuity(worktree)
     expect(after).toBe(before)
+  })
+
+  it("returns new memories on first delta read and seeds ledger", async () => {
+    const worktree = await setupFixtureWorktree({
+      "docs/CONTINUITY.md": DELTA_FIXTURE,
+    })
+    const before = await readContinuity(worktree)
+    const sessionId = "delta-first-read"
+
+    const output = await tool.execute(
+      {
+        command: "read",
+        read: {
+          sessionId,
+        },
+      },
+      { worktree }
+    )
+
+    expect(output).toContain("Shared plan memory.")
+    expect(output.match(/Shared plan memory\./g)?.length).toBe(1)
+    expect(output).toContain("First decision memory.")
+    expect(output).toContain("Completed outcome memory.")
+
+    const ledger = await readLedger(worktree, sessionId)
+    expect(ledger.version).toBe(1)
+    expect(ledger.sessionId).toBe(sessionId)
+    expect(Object.keys(ledger.seen)).toContain(
+      "plans-202602010000z-user-aa11aa11aa11"
+    )
+
+    const after = await readContinuity(worktree)
+    expect(after).toBe(before)
+  })
+
+  it("returns minimal no-delta output on repeated delta reads", async () => {
+    const worktree = await setupFixtureWorktree({
+      "docs/CONTINUITY.md": DELTA_FIXTURE,
+    })
+
+    const request = {
+      command: "read",
+      read: {
+        mode: "delta",
+        sessionId: "delta-repeat-read",
+      },
+    }
+
+    await tool.execute(request, { worktree })
+    const second = await tool.execute(request, { worktree })
+
+    expect(second).toBe("No new or changed task memories.")
+  })
+
+  it("supports delta mode on legacy-only continuity files", async () => {
+    const worktree = await setupFixtureWorktree({
+      "docs/CONTINUITY.md": READ_FIXTURE,
+    })
+
+    const request = {
+      command: "read",
+      read: {
+        mode: "delta",
+        sessionId: "delta-legacy-only",
+      },
+    }
+
+    const first = await tool.execute(request, { worktree })
+    const second = await tool.execute(request, { worktree })
+
+    expect(first).toContain("Second plan entry.")
+    expect(first).toContain("First outcome entry.")
+    expect(second).toBe("No new or changed task memories.")
+  })
+
+  it("returns changed content again when the same memory id changes", async () => {
+    const worktree = await setupFixtureWorktree({
+      "docs/CONTINUITY.md": DELTA_FIXTURE,
+    })
+    const sessionId = "delta-changed-hash"
+
+    await tool.execute(
+      {
+        command: "read",
+        read: {
+          mode: "delta",
+          sessionId,
+        },
+      },
+      { worktree }
+    )
+
+    const updatedFixture = DELTA_FIXTURE.replace(
+      /- \[id:plans-202602010000z-user-aa11aa11aa11\] 2026-02-01T00:00Z \[USER\] \[plan:baseline\] Shared plan memory\.\n- \[id:plans-202602010000z-user-aa11aa11aa11\] 2026-02-01T00:00Z \[USER\] \[plan:baseline\] Shared plan memory\./,
+      "- [id:plans-202602010000z-user-aa11aa11aa11] 2026-02-01T00:00Z [USER] [plan:baseline] Shared plan memory updated."
+    )
+    await fs.writeFile(
+      path.join(worktree, "docs", "CONTINUITY.md"),
+      updatedFixture,
+      "utf8"
+    )
+
+    const output = await tool.execute(
+      {
+        command: "read",
+        read: {
+          mode: "delta",
+          sessionId,
+        },
+      },
+      { worktree }
+    )
+
+    expect(output).toContain("Shared plan memory updated.")
+    expect(output).not.toContain("Shared plan memory.\n")
+  })
+
+  it("includes pinned entries only when requested in delta mode", async () => {
+    const worktree = await setupFixtureWorktree({
+      "docs/CONTINUITY.md": DELTA_FIXTURE,
+    })
+    const sessionId = "delta-pinned"
+
+    await tool.execute(
+      {
+        command: "read",
+        read: { mode: "delta", sessionId },
+      },
+      { worktree }
+    )
+
+    const withoutPinned = await tool.execute(
+      {
+        command: "read",
+        read: { mode: "delta", sessionId },
+      },
+      { worktree }
+    )
+    const withPinned = await tool.execute(
+      {
+        command: "read",
+        read: { mode: "delta", sessionId, includePinned: true },
+      },
+      { worktree }
+    )
+
+    expect(withoutPinned).toBe("No new or changed task memories.")
+    expect(withPinned).toContain("Pinned progress memory.")
+  })
+
+  it("includes unresolved entries only when requested in delta mode", async () => {
+    const worktree = await setupFixtureWorktree({
+      "docs/CONTINUITY.md": DELTA_FIXTURE,
+    })
+    const sessionId = "delta-unresolved"
+
+    await tool.execute(
+      {
+        command: "read",
+        read: { mode: "delta", sessionId },
+      },
+      { worktree }
+    )
+
+    const withUnresolved = await tool.execute(
+      {
+        command: "read",
+        read: {
+          mode: "delta",
+          sessionId,
+          includeUnresolved: true,
+        },
+      },
+      { worktree }
+    )
+
+    expect(withUnresolved).toContain("Unresolved discovery memory.")
+  })
+
+  it("rejects missing or invalid session ids in delta mode", async () => {
+    const worktree = await setupFixtureWorktree({
+      "docs/CONTINUITY.md": DELTA_FIXTURE,
+    })
+
+    await expect(
+      tool.execute(
+        {
+          command: "read",
+          read: {},
+        },
+        { worktree }
+      )
+    ).rejects.toThrow("read.sessionId must be provided for delta mode")
+
+    await expect(
+      tool.execute(
+        {
+          command: "read",
+          read: { mode: "delta", sessionId: "/bad" },
+        },
+        { worktree }
+      )
+    ).rejects.toThrow(
+      "read.sessionId must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    )
+  })
+
+  it("rejects invalid read mode", async () => {
+    const worktree = await setupFixtureWorktree({
+      "docs/CONTINUITY.md": DELTA_FIXTURE,
+    })
+
+    await expect(
+      tool.execute(
+        {
+          command: "read",
+          read: { mode: "weird" },
+        },
+        { worktree }
+      )
+    ).rejects.toThrow('read.mode must be either "tail" or "delta"')
+  })
+
+  it("stores delta ledger outside the worktree", async () => {
+    const worktree = await setupFixtureWorktree({
+      "docs/CONTINUITY.md": DELTA_FIXTURE,
+    })
+    const sessionId = "delta-ledger-path"
+
+    await tool.execute(
+      {
+        command: "read",
+        read: { mode: "delta", sessionId },
+      },
+      { worktree }
+    )
+
+    const ledgerPath = resolveLedgerPath(worktree, sessionId)
+    expect(ledgerPath.startsWith(worktree)).toBe(false)
+    const ledger = await loadSessionLedger(ledgerPath, worktree, sessionId)
+    expect(ledger.sessionId).toBe(sessionId)
+  })
+
+  it("recovers from malformed ledger json by reseeding from continuity", async () => {
+    const worktree = await setupFixtureWorktree({
+      "docs/CONTINUITY.md": DELTA_FIXTURE,
+    })
+    const sessionId = "delta-corrupt-ledger"
+    const ledgerPath = resolveLedgerPath(worktree, sessionId)
+    await fs.mkdir(path.dirname(ledgerPath), { recursive: true })
+    await fs.writeFile(ledgerPath, "{not-json", "utf8")
+
+    const output = await tool.execute(
+      {
+        command: "read",
+        read: { mode: "delta", sessionId },
+      },
+      { worktree }
+    )
+
+    expect(output).toContain("Shared plan memory.")
+    const ledger = await readLedger(worktree, sessionId)
+    expect(ledger.version).toBe(1)
+  })
+
+  it("recovers from invalid ledger format by reseeding from continuity", async () => {
+    const worktree = await setupFixtureWorktree({
+      "docs/CONTINUITY.md": DELTA_FIXTURE,
+    })
+    const sessionId = "delta-invalid-ledger"
+    const ledgerPath = resolveLedgerPath(worktree, sessionId)
+    await fs.mkdir(path.dirname(ledgerPath), { recursive: true })
+    await fs.writeFile(
+      ledgerPath,
+      JSON.stringify({ version: 999, seen: null }, null, 2),
+      "utf8"
+    )
+
+    const output = await tool.execute(
+      {
+        command: "read",
+        read: { mode: "delta", sessionId },
+      },
+      { worktree }
+    )
+
+    expect(output).toContain("First decision memory.")
+    const ledger = await readLedger(worktree, sessionId)
+    expect(ledger.sessionId).toBe(sessionId)
   })
 
   it("ignores compaction args when reading", async () => {
@@ -598,6 +931,7 @@ describe("continuity", () => {
           encoding: "cl100k_base",
         },
         read: {
+          mode: "tail",
           linesPerSection: 1,
         },
       },
@@ -635,7 +969,7 @@ describe("continuity", () => {
 
     const content = await readContinuity(worktree)
     expect(content).toContain("Update should ignore read args.")
-    expect(result).toContain("Update should ignore read args.")
+    expect(result).toBe("")
   })
 
   it("skips compaction when under upper threshold", async () => {

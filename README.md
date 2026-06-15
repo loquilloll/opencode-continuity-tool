@@ -16,7 +16,7 @@ AI coding assistants lose context between sessions. `CONTINUITY.md` solves this 
 - **Auto-creation** -- `docs/CONTINUITY.md` is created from a canonical template if missing
 - **Token-budget compaction** -- when the document exceeds a configurable upper token threshold, oldest entries are trimmed per-section (respecting ratio weights) down to a lower target
 - **Archival** -- compacted entries are preserved in `docs/MEMORY.md` under their original section headers
-- **Patch-style output** -- every update returns a diff-like preview showing what changed
+- **Silent successful updates** -- update returns an empty output string on success; errors are surfaced normally
 
 ## Requirements
 
@@ -99,25 +99,44 @@ Legacy bullets without `[id:...]` remain readable. The tool derives a determinis
 
 ### Read Command
 
-Returns the latest N bullet lines per section without modifying any files. Useful at the start of a session to load context.
+Read supports two modes without modifying project docs:
+
+- `mode: "delta"` (default) returns only new or changed memories for a session and stores its seen-ledger outside the repository docs in OS temp storage.
+- `mode: "tail"` returns the latest N bullet lines per section.
 
 ```js
 continuity({
   command: "read",
   read: {
-    linesPerSection: 5,   // optional, default: 5
+    sessionId: "session-123", // required for default delta mode
+    includePinned: true,
+    includeUnresolved: true,
   },
 })
 ```
 
-**Output:** A text report with section headers in canonical order and the most recent bullet entries under each.
+```js
+continuity({
+  command: "read",
+  read: {
+    mode: "tail",
+    linesPerSection: 5, // optional, default: 5
+  },
+})
+```
+
+**Output:** A text report with section headers in canonical order and the eligible bullet entries under each. Read output omits internal `[id:...]` prefixes. When delta mode finds nothing new, it returns:
+
+```
+No new or changed task memories.
+```
 
 ```
 ## [PLANS]
-- [id:plans-202603032203-code-2ddff2b6e54d] 2026-03-03T22:03Z [CODE] [plan:03-continuity-command-read] Implemented read mode.
+- 2026-03-03T22:03Z [CODE] [plan:03-continuity-command-read] Implemented read mode.
 
 ## [DECISIONS]
-- [id:decisions-202603032203-code-3dcbf5bb8470] 2026-03-03T22:03Z [CODE] [plan:03-continuity-command-read] Switched to command-based interface.
+- 2026-03-03T22:03Z [CODE] [plan:03-continuity-command-read] Switched to command-based interface.
 
 ## [PROGRESS]
 ...
@@ -155,18 +174,7 @@ continuity({
 })
 ```
 
-**Output:** A patch-style preview showing appended entries per section:
-
-```
-*** Begin Patch
-*** Update File: docs/CONTINUITY.md
-*** Summary: Updated 2 entries across 2 sections (PLANS, DECISIONS).
-@@ ## [PLANS]
-+- [id:plans-202603011822-user-7d58e7e7791d] 2026-03-01T18:22Z [USER] [plan:01-continuity-tool] Implement continuity update tool with shared UTC timestamp.
-@@ ## [DECISIONS]
-+- [id:decisions-202603011822-code-72fba5410749] 2026-03-01T18:22Z [CODE] Use a local .opencode tool with schema validation.
-*** End Patch
-```
+**Output:** An empty output string on success. Updated entries are written to `docs/CONTINUITY.md`; validation/runtime failures are returned as errors.
 
 ## API Reference
 
@@ -207,6 +215,12 @@ Threshold precedence is: explicit `upperTokenThreshold`, else legacy `totalToken
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `linesPerSection` | `integer` | `5` | Number of most recent bullet lines to return per section. |
+| `mode` | `"tail" \| "delta"` | `"delta"` | Read compatibility mode. `delta` returns only new/changed session memories; `tail` returns section tails. |
+| `sessionId` | `string` | -- | Required for default `mode: "delta"`. Used to persist the session-local seen ledger outside the repo docs. |
+| `includePinned` | `boolean` | `false` | In delta mode, include pinned entries even when unchanged. |
+| `includeUnresolved` | `boolean` | `false` | In delta mode, include entries with `[status:unresolved]` even when unchanged. |
+
+For delta mode, the seen-ledger is stored under the OS temp directory using a worktree hash plus `sessionId`, so read requests do not mutate repository documentation files.
 
 ## Compaction
 
@@ -284,8 +298,20 @@ bun test tests/continuity.test.js --timeout 20000
 | Multi-line text rejection | Rejects and leaves file unchanged |
 | Bracket-token text rejection | Prevents metadata injection through leading text tokens |
 | Legacy and ID-prefixed parser coverage | Supports both formats, status/pin parsing, and malformed-line rejection |
+| Builder/parser round trip | New writes parse back into matching memory metadata |
 | Hash normalization stability | Whitespace-only differences hash equivalently |
+| Sparse deterministic IDs | Derived IDs remain deterministic with sparse inputs |
+| Dot-plan slug support | Plan slugs with dots remain valid in IDs and entry output |
 | Read latest entries per section | Returns tail of each section without mutation |
+| Mixed legacy and ID reads | Tail mode supports both old and new entry formats |
+| First delta read | Returns new memories and seeds a session ledger |
+| Repeated delta read | Returns `No new or changed task memories.` when nothing changed |
+| Delta change detection | Changed content for the same memory ID reappears |
+| Delta on legacy-only files | Derived IDs work end-to-end without explicit `[id:...]` prefixes |
+| Delta pinned replay | Pinned entries can be re-included on request |
+| Delta unresolved replay | `[status:unresolved]` entries can be re-included on request |
+| Delta validation | Invalid read modes and bad/missing session IDs are rejected |
+| Ledger isolation and recovery | Delta ledger stays outside worktree and recovers from corrupt data |
 | Skip compaction under threshold | No MEMORY.md created when under budget |
 | Truncation and archival | Oldest entries removed, archived to MEMORY.md, tokens within budget |
 | Mixed-format compaction | Compaction continues to handle legacy and ID-prefixed entries |
