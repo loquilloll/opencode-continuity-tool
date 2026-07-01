@@ -10,6 +10,7 @@ import tool, {
   normalizeMemoryContent,
   parseContinuityEntry,
   resolveLedgerPath,
+  resolveWorktree,
 } from "../src/continuity.js"
 
 const tiktoken = await import("tiktoken")
@@ -343,6 +344,15 @@ describe("continuity", () => {
     expect(content).toContain("## [DISCOVERIES]")
     expect(content).toContain("## [OUTCOMES]")
     expect(content).toContain("Created from missing file.")
+  })
+
+  it("falls back to the current working directory when worktree is missing or root-only", () => {
+    const cwd = path.join(path.sep, "tmp", "continuity-cwd")
+    const filesystemRoot = path.parse(cwd).root
+
+    expect(resolveWorktree({}, cwd)).toBe(cwd)
+    expect(resolveWorktree({ worktree: filesystemRoot }, cwd)).toBe(cwd)
+    expect(resolveWorktree({ worktree: cwd }, filesystemRoot)).toBe(cwd)
   })
 
   it("fails when a required section header is missing", async () => {

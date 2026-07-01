@@ -304,6 +304,28 @@ function resolveLedgerPath(worktree, sessionId) {
   )
 }
 
+function resolveWorktree(context, cwd = process.cwd()) {
+  const fallbackCwd = path.resolve(cwd)
+  const configuredWorktree =
+    typeof context?.worktree === "string" ? context.worktree.trim() : ""
+
+  if (!configuredWorktree) {
+    return fallbackCwd
+  }
+
+  const resolvedWorktree = path.resolve(configuredWorktree)
+
+  // Some runtimes report the filesystem root instead of the actual project.
+  if (
+    resolvedWorktree === path.parse(resolvedWorktree).root &&
+    fallbackCwd !== resolvedWorktree
+  ) {
+    return fallbackCwd
+  }
+
+  return resolvedWorktree
+}
+
 async function loadSessionLedger(filePath, worktree, sessionId) {
   try {
     const content = await fs.readFile(filePath, "utf8")
@@ -751,12 +773,13 @@ export {
   normalizeMemoryContent,
   parseContinuityEntry,
   resolveLedgerPath,
+  resolveWorktree,
   saveSessionLedger,
 }
 
 export default tool({
   description:
-    "Read or update docs/CONTINUITY.md. READ: include read.sessionId unless you explicitly set read.mode=\"tail\"; read.mode defaults to \"delta\", which requires sessionId and returns only new/changed memories for that session. Tail mode returns the latest lines per section without a sessionId. UPDATE: appends validated entries (updates[]) and optional compaction.",
+    "Read or update docs/CONTINUITY.md in the active worktree/current directory. READ defaults to read.mode=\"delta\". You MUST provide read.sessionId for read unless you explicitly set read.mode=\"tail\". Delta mode returns only new/changed memories for that session; tail mode is the only read mode that does not need sessionId. UPDATE: appends validated entries (updates[]) and optional compaction.",
   args: {
     command: tool.schema.enum(["read", "update"]),
     updates: tool.schema
@@ -788,13 +811,13 @@ export default tool({
           .enum(["tail", "delta"])
           .optional()
           .describe(
-            'When using read, include sessionId unless you explicitly set mode="tail". "delta" (default) returns only new/changed memories since the last read and REQUIRES sessionId; "tail" returns the latest linesPerSection entries per section without sessionId.'
+            'READ DEFAULT: mode="delta". You MUST provide sessionId unless you explicitly set mode="tail". "delta" returns only new/changed memories since the last read; "tail" returns the latest linesPerSection entries per section and is the only mode that may omit sessionId.'
           ),
         sessionId: tool.schema
           .string()
           .optional()
           .describe(
-            'Include this when using read unless you explicitly set mode="tail". It is REQUIRED for delta mode (the default).'
+            'Required for normal read usage because read defaults to mode="delta". Omit sessionId only when you explicitly set mode="tail".'
           ),
         includePinned: tool.schema.boolean().optional(),
         includeUnresolved: tool.schema.boolean().optional(),
@@ -802,12 +825,10 @@ export default tool({
       .optional(),
   },
   async execute(args, context) {
-    if (!context.worktree) {
-      throw new Error("Missing worktree in tool context")
-    }
+    const worktree = resolveWorktree(context)
 
     const continuityPath = path.join(
-      context.worktree,
+      worktree,
       "docs",
       "CONTINUITY.md"
     )
@@ -834,10 +855,10 @@ export default tool({
       }
 
       const parsedEntries = collectParsedEntries(lines, orderedSections)
-      const ledgerPath = resolveLedgerPath(context.worktree, readConfig.sessionId)
+      const ledgerPath = resolveLedgerPath(worktree, readConfig.sessionId)
       const ledger = await loadSessionLedger(
         ledgerPath,
-        context.worktree,
+        worktree,
         readConfig.sessionId
       )
       const { entriesBySection, includedCount } = collectDeltaEntries(
@@ -859,7 +880,7 @@ export default tool({
     }
 
     const timestamp = `${new Date().toISOString().slice(0, 16)}Z`
-    const memoryPath = path.join(context.worktree, "docs", "MEMORY.md")
+    const memoryPath = path.join(worktree, "docs", "MEMORY.md")
     const compactionConfig = resolveCompactionConfig(args.compaction)
 
     const updatesBySection = new Map()

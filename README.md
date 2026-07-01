@@ -13,7 +13,7 @@ AI coding assistants lose context between sessions. `CONTINUITY.md` solves this 
 - **Provenance tracking** -- every entry is tagged with its source (`USER`, `CODE`, `TOOL`, `ASSUMPTION`, `UNCONFIRMED`)
 - **Plan linking** -- optional `[plan:slug]` tags connect entries to specific build plans
 - **Schema validation** -- section names, provenance values, plan slugs, and text length are validated via Zod schemas
-- **Auto-creation** -- `docs/CONTINUITY.md` is created from a canonical template if missing
+- **Auto-creation** -- `docs/CONTINUITY.md` is created from a canonical template if missing in the active worktree/current directory
 - **Token-budget compaction** -- when the document exceeds a configurable upper token threshold, oldest entries are trimmed per-section (respecting ratio weights) down to a lower target
 - **Archival** -- compacted entries are preserved in `docs/MEMORY.md` under their original section headers
 - **Silent successful updates** -- update returns an empty output string on success; errors are surfaced normally
@@ -99,7 +99,7 @@ Legacy bullets without `[id:...]` remain readable. The tool derives a determinis
 
 ### Read Command
 
-Read supports two modes without modifying project docs. Include `sessionId` when using `read` unless you explicitly set `mode: "tail"`:
+Read supports two modes without modifying project docs. `read` defaults to `mode: "delta"`, so you must provide `sessionId` unless you explicitly set `mode: "tail"`:
 
 - `mode: "delta"` (default) returns only new or changed memories for a session and stores its seen-ledger outside the repository docs in OS temp storage.
 - `mode: "tail"` returns the latest N bullet lines per section.
@@ -174,7 +174,7 @@ continuity({
 })
 ```
 
-**Output:** An empty output string on success. Updated entries are written to `docs/CONTINUITY.md`; validation/runtime failures are returned as errors.
+**Output:** An empty output string on success. Updated entries are written to `docs/CONTINUITY.md` in the active worktree/current directory; validation/runtime failures are returned as errors.
 
 ## API Reference
 
@@ -215,8 +215,8 @@ Threshold precedence is: explicit `upperTokenThreshold`, else legacy `totalToken
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `linesPerSection` | `integer` | `5` | Number of most recent bullet lines to return per section. |
-| `mode` | `"tail" \| "delta"` | `"delta"` | Read compatibility mode. Include `sessionId` unless you explicitly set `tail`; `delta` returns only new/changed session memories, while `tail` returns section tails. |
-| `sessionId` | `string` | -- | Include this when using `read` unless you explicitly set `mode: "tail"`. It is required for default `mode: "delta"` and persists the session-local seen ledger outside the repo docs. |
+| `mode` | `"tail" \| "delta"` | `"delta"` | Read compatibility mode. `delta` is the default, so you must provide `sessionId` unless you explicitly set `mode: "tail"`. |
+| `sessionId` | `string` | -- | Required for normal `read` usage because `read` defaults to `mode: "delta"`. Omit it only when you explicitly set `mode: "tail"`. |
 | `includePinned` | `boolean` | `false` | In delta mode, include pinned entries even when unchanged. |
 | `includeUnresolved` | `boolean` | `false` | In delta mode, include entries with `[status:unresolved]` even when unchanged. |
 
@@ -273,10 +273,12 @@ The tool rejects invalid input and leaves the file unchanged when validation fai
 | `updates` provided with `read` command | `updates are not supported for read command` |
 | Empty `updates` with `update` command | `updates must be provided for update command` |
 | Text begins with bracketed metadata-like token | `text must not start with a bracketed token` |
-| Missing `context.worktree` | `Missing worktree in tool context` |
 
 Compatibility behaviors:
 `compaction` on `read` is ignored, `read` on `update` is ignored, and `lowerTokenThreshold` is normalized from `upperTokenThreshold` when needed.
+
+Path resolution behavior:
+`docs/CONTINUITY.md` resolves from `context.worktree` when the runtime provides a real project path. If the runtime omits `context.worktree` or reports only the filesystem root, the tool falls back to the current working directory so it does not try to write under `/docs`.
 
 ## Testing
 
@@ -294,6 +296,7 @@ bun test tests/continuity.test.js --timeout 20000
 | Append entries after last bullet | Entries appear after existing bullets with shared timestamp |
 | Preserve input order | Multiple entries in one section maintain insertion order |
 | Create file when missing | Template with all 5 sections is auto-created |
+| Worktree fallback | Missing or root-only worktree context falls back to current working directory |
 | Missing section header | Rejects update and leaves file unchanged |
 | Multi-line text rejection | Rejects and leaves file unchanged |
 | Bracket-token text rejection | Prevents metadata injection through leading text tokens |
