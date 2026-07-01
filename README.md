@@ -99,7 +99,7 @@ Legacy bullets without `[id:...]` remain readable. The tool derives a determinis
 
 ### Read Command
 
-Read supports two modes without modifying project docs:
+Read supports two modes without modifying project docs. Include `sessionId` when using `read` unless you explicitly set `mode: "tail"`:
 
 - `mode: "delta"` (default) returns only new or changed memories for a session and stores its seen-ledger outside the repository docs in OS temp storage.
 - `mode: "tail"` returns the latest N bullet lines per section.
@@ -215,8 +215,8 @@ Threshold precedence is: explicit `upperTokenThreshold`, else legacy `totalToken
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `linesPerSection` | `integer` | `5` | Number of most recent bullet lines to return per section. |
-| `mode` | `"tail" \| "delta"` | `"delta"` | Read compatibility mode. `delta` returns only new/changed session memories; `tail` returns section tails. |
-| `sessionId` | `string` | -- | Required for default `mode: "delta"`. Used to persist the session-local seen ledger outside the repo docs. |
+| `mode` | `"tail" \| "delta"` | `"delta"` | Read compatibility mode. Include `sessionId` unless you explicitly set `tail`; `delta` returns only new/changed session memories, while `tail` returns section tails. |
+| `sessionId` | `string` | -- | Include this when using `read` unless you explicitly set `mode: "tail"`. It is required for default `mode: "delta"` and persists the session-local seen ledger outside the repo docs. |
 | `includePinned` | `boolean` | `false` | In delta mode, include pinned entries even when unchanged. |
 | `includeUnresolved` | `boolean` | `false` | In delta mode, include entries with `[status:unresolved]` even when unchanged. |
 

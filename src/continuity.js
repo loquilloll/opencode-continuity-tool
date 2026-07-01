@@ -756,7 +756,7 @@ export {
 
 export default tool({
   description:
-    "Read or update docs/CONTINUITY.md. READ: read.mode defaults to \"delta\", which REQUIRES read.sessionId and returns only new/changed memories for that session; to read recent entries without a session, set read.mode=\"tail\" (returns the latest lines per section, no sessionId needed). UPDATE: appends validated entries (updates[]) and optional compaction.",
+    "Read or update docs/CONTINUITY.md. READ: include read.sessionId unless you explicitly set read.mode=\"tail\"; read.mode defaults to \"delta\", which requires sessionId and returns only new/changed memories for that session. Tail mode returns the latest lines per section without a sessionId. UPDATE: appends validated entries (updates[]) and optional compaction.",
   args: {
     command: tool.schema.enum(["read", "update"]),
     updates: tool.schema
@@ -788,12 +788,14 @@ export default tool({
           .enum(["tail", "delta"])
           .optional()
           .describe(
-            '"delta" (default) returns only new/changed memories since the last read and REQUIRES sessionId; "tail" returns the latest linesPerSection entries per section (no sessionId needed)'
+            'When using read, include sessionId unless you explicitly set mode="tail". "delta" (default) returns only new/changed memories since the last read and REQUIRES sessionId; "tail" returns the latest linesPerSection entries per section without sessionId.'
           ),
         sessionId: tool.schema
           .string()
           .optional()
-          .describe("REQUIRED when mode is delta (the default); omit for tail mode"),
+          .describe(
+            'Include this when using read unless you explicitly set mode="tail". It is REQUIRED for delta mode (the default).'
+          ),
         includePinned: tool.schema.boolean().optional(),
         includeUnresolved: tool.schema.boolean().optional(),
       })
