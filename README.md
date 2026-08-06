@@ -1,6 +1,6 @@
 # opencode-continuity-tool
 
-A plugin for [OpenCode](https://opencode.ai/) that provides structured, validated management of `docs/CONTINUITY.md` -- a living document designed to survive context compaction across AI coding sessions. The tool enforces canonical formatting, shared UTC timestamps, provenance tracking, and automatic token-budget compaction with archival to `docs/MEMORY.md`.
+A plugin for [OpenCode](https://opencode.ai/) that provides structured, validated management of `CONTINUITY.md` -- a living document designed to survive context compaction across AI coding sessions. The tool enforces canonical formatting, shared UTC timestamps, provenance tracking, and automatic token-budget compaction with archival to the colocated `MEMORY.md`. Both files use the selected continuity directory, which defaults to `<worktree>/docs`.
 
 ## Why
 
@@ -13,9 +13,9 @@ AI coding assistants lose context between sessions. `CONTINUITY.md` solves this 
 - **Provenance tracking** -- every entry is tagged with its source (`USER`, `CODE`, `TOOL`, `ASSUMPTION`, `UNCONFIRMED`)
 - **Plan linking** -- optional `[plan:slug]` tags connect entries to specific build plans
 - **Schema validation** -- section names, provenance values, plan slugs, and text length are validated via Zod schemas
-- **Auto-creation** -- `docs/CONTINUITY.md` is created from a canonical template if missing in the active worktree/current directory
+- **Auto-creation** -- on `update`, the selected directory and `CONTINUITY.md` are created from a canonical template when missing; `read` reports a missing file without creating one
 - **Token-budget compaction** -- when the document exceeds a configurable upper token threshold, oldest entries are trimmed per-section (respecting ratio weights) down to a lower target
-- **Archival** -- compacted entries are preserved in `docs/MEMORY.md` under their original section headers
+- **Archival** -- compacted entries are preserved in the colocated `MEMORY.md` under their original section headers
 - **Silent successful updates** -- update returns an empty output string on success; errors are surfaced normally
 
 ## Requirements
@@ -49,9 +49,34 @@ AI coding assistants lose context between sessions. `CONTINUITY.md` solves this 
 
    See the [OpenCode custom tools documentation](https://opencode.ai/docs/custom-tools/) for full configuration details.
 
+## File location configuration
+
+The tool always keeps the fixed filenames `CONTINUITY.md` and `MEMORY.md` together in one selected directory. Without configuration, that directory is `<worktree>/docs`.
+
+Location configuration uses standalone JSON sidecar files read by this tool. These are not keys in `opencode.json` or OpenCode's configuration schema.
+
+- **Global:** `$XDG_CONFIG_HOME/opencode/continuity.json`, or `~/.config/opencode/continuity.json` when `XDG_CONFIG_HOME` is unset or blank
+- **Project:** `<worktree>/.opencode/continuity.json`
+
+Both sidecars use the same strict JSON shape:
+
+```json
+{
+  "directory": ".ai-memory"
+}
+```
+
+Precedence is `project > global > docs`. A missing sidecar falls through to the next level; a present invalid sidecar fails the tool call instead. Sidecars are read on every tool invocation, so a valid change applies on the next call without restarting OpenCode.
+
+Relative values from either sidecar resolve against the resolved worktree. Absolute values remain absolute. Bare `~` and paths beginning with `~/` expand to the current user's home directory; any other `~`-prefixed form, including `~user/...`, is rejected.
+
+Sidecars must contain valid JSON with exactly one non-blank string field named `directory`. Malformed JSON, missing, blank, or non-string `directory` values, extra keys, and paths that already exist as non-directory files are rejected. A selected directory that does not yet exist is created when needed.
+
+Changing the configured directory does not move or copy existing files. Absolute directories can intentionally share one continuity document between projects, but concurrent writers are not protected by a cross-process lock.
+
 ## Document Structure
 
-The tool manages `docs/CONTINUITY.md` with five canonical sections:
+The tool manages `CONTINUITY.md` in the selected directory, defaulting to `<worktree>/docs`, with five canonical sections:
 
 ```markdown
 # CONTINUITY
@@ -99,9 +124,9 @@ Legacy bullets without `[id:...]` remain readable. The tool derives a determinis
 
 ### Read Command
 
-Read supports two modes without modifying project docs. `read` defaults to `mode: "delta"`, so you must provide `sessionId` unless you explicitly set `mode: "tail"`:
+Read supports two modes without modifying the managed continuity files. `read` defaults to `mode: "delta"`, so you must provide `sessionId` unless you explicitly set `mode: "tail"`:
 
-- `mode: "delta"` (default) returns only new or changed memories for a session and stores its seen-ledger outside the repository docs in OS temp storage.
+- `mode: "delta"` (default) returns only new or changed memories for a session and stores its seen-ledger in OS temporary storage, independently of the selected continuity directory.
 - `mode: "tail"` returns the latest N bullet lines per section.
 
 ```js
@@ -174,7 +199,7 @@ continuity({
 })
 ```
 
-**Output:** An empty output string on success. Updated entries are written to `docs/CONTINUITY.md` in the active worktree/current directory; validation/runtime failures are returned as errors.
+**Output:** An empty output string on success. Updated entries are written to `CONTINUITY.md` in the selected directory; validation and runtime failures are returned as errors.
 
 ## API Reference
 
@@ -220,16 +245,16 @@ Threshold precedence is: explicit `upperTokenThreshold`, else legacy `totalToken
 | `includePinned` | `boolean` | `false` | In delta mode, include pinned entries even when unchanged. |
 | `includeUnresolved` | `boolean` | `false` | In delta mode, include entries with `[status:unresolved]` even when unchanged. |
 
-For delta mode, the seen-ledger is stored under the OS temp directory using a worktree hash plus `sessionId`, so read requests do not mutate repository documentation files.
+For delta mode, the seen-ledger remains in the OS temporary directory and is keyed by the resolved worktree plus `sessionId`. Changing the selected continuity directory therefore does not change ledger identity or mutate managed files.
 
 ## Compaction
 
-When the total token count of `docs/CONTINUITY.md` exceeds the upper threshold after an update, the tool automatically:
+When the total token count of `CONTINUITY.md` in the selected directory exceeds the upper threshold after an update, the tool automatically:
 
 1. **Computes per-section token budgets** using ratio weights (derived from real-world continuity data) to allocate the lower threshold across sections proportionally.
 2. **Removes oldest bullet entries** within each section until each section meets its budget.
 3. **Continues trimming** from the most over-budget section if the document still exceeds the lower threshold, preserving section ratios as it converges.
-4. **Archives removed entries** into `docs/MEMORY.md` under their original section headers.
+4. **Archives removed entries** into the colocated `MEMORY.md` under their original section headers.
 5. **Logs a compaction event** in the `DISCOVERIES` section.
 
 ### Section Ratio Weights
@@ -246,7 +271,7 @@ These weights reflect typical real-world usage patterns where PROGRESS entries d
 
 ### MEMORY.md
 
-`docs/MEMORY.md` is an archival file that stores entries removed during compaction. It is not a source of truth -- it preserves history for reference. The file includes reserved `[THEMES]` and `[MILESTONES]` sections for future compaction phases.
+`MEMORY.md` is the archival file colocated with `CONTINUITY.md` in the selected directory. It is not a source of truth -- it preserves entries removed during compaction for reference. The file includes reserved `[THEMES]` and `[MILESTONES]` sections for future compaction phases.
 
 ```markdown
 # MEMORY
@@ -262,7 +287,7 @@ These weights reflect typical real-world usage patterns where PROGRESS entries d
 
 ## Validation & Error Handling
 
-The tool rejects invalid input and leaves the file unchanged when validation fails:
+The tool rejects invalid input or location configuration without modifying the managed files:
 
 | Condition | Error |
 |---|---|
@@ -273,16 +298,22 @@ The tool rejects invalid input and leaves the file unchanged when validation fai
 | `updates` provided with `read` command | `updates are not supported for read command` |
 | Empty `updates` with `update` command | `updates must be provided for update command` |
 | Text begins with bracketed metadata-like token | `text must not start with a bracketed token` |
+| Malformed location sidecar JSON | Error identifies the invalid sidecar |
+| Missing, blank, or non-string `directory` | Error identifies the invalid field and sidecar |
+| Extra sidecar keys | Error identifies the unsupported configuration |
+| Existing non-directory target | Error identifies the configured target |
+| Unsupported `~`-prefixed path (for example, `~user/...`) | Error identifies the unsupported home-directory form |
 
 Compatibility behaviors:
 `compaction` on `read` is ignored, `read` on `update` is ignored, and `lowerTokenThreshold` is normalized from `upperTokenThreshold` when needed.
 
 Path resolution behavior:
-`docs/CONTINUITY.md` resolves from `context.worktree` when the runtime provides a real project path. If the runtime omits `context.worktree` or reports only the filesystem root, the tool falls back to the current working directory so it does not try to write under `/docs`.
+
+The active worktree comes from `context.worktree`. If the runtime omits it or reports only the filesystem root, the tool falls back to the current working directory. The selected continuity directory is then resolved using the sidecar precedence and path rules described above; without configuration it remains `<worktree>/docs`.
 
 ## Testing
 
-Tests use [Bun's test runner](https://bun.sh/docs/cli/test) with temporary worktrees to avoid mutating repository files.
+Tests use [Bun's test runner](https://bun.sh/docs/cli/test) with temporary worktrees, configuration roots, and continuity directories to avoid mutating repository or user files.
 
 ```bash
 # Run all tests (use extended timeout for compaction tests)
@@ -297,6 +328,12 @@ bun test tests/continuity.test.js --timeout 20000
 | Preserve input order | Multiple entries in one section maintain insertion order |
 | Create file when missing | Template with all 5 sections is auto-created |
 | Worktree fallback | Missing or root-only worktree context falls back to current working directory |
+| Global relative configuration | Selects a worktree-relative directory from the global sidecar |
+| Project configuration precedence | Project sidecar overrides the global sidecar |
+| Absolute and tilde paths | Resolves absolute, `~`, and `~/...` directory values correctly |
+| Strict configuration rejection | Invalid present sidecars fail without modifying managed files |
+| Configured delta ledger identity | Delta reads use the selected directory while ledger identity remains worktree- and session-based |
+| Configured compaction | Compaction archives to the colocated `MEMORY.md` in the selected directory |
 | Missing section header | Rejects update and leaves file unchanged |
 | Multi-line text rejection | Rejects and leaves file unchanged |
 | Bracket-token text rejection | Prevents metadata injection through leading text tokens |
@@ -322,13 +359,15 @@ bun test tests/continuity.test.js --timeout 20000
 
 ## Project Structure
 
+This repository shows the default layout used when no location sidecar selects another directory:
+
 ```
 opencode-continuity-tool/
   src/
     continuity.js          # Plugin implementation (exported as OpenCode tool)
   tests/
     continuity.test.js     # Bun test suite
-  docs/
+  docs/                    # Default selected continuity directory
     CONTINUITY.md          # Live continuity document (managed by the tool)
     CONTINUITY_DUMMY.md    # Large fixture for compaction tests
     continuity-tool.md     # Tool specification / design doc

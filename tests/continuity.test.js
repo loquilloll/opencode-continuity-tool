@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { afterAll, describe, expect, it } from "bun:test"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
@@ -6,10 +6,16 @@ import tool, {
   buildEntry,
   deriveMemoryId,
   hashMemoryContent,
+  loadContinuityDirectoryConfig,
   loadSessionLedger,
   normalizeMemoryContent,
   parseContinuityEntry,
+  resolveConfiguredDirectory,
+  resolveContinuityDirectory,
+  resolveContinuityPaths,
+  resolveGlobalConfigPath,
   resolveLedgerPath,
+  resolveProjectConfigPath,
   resolveWorktree,
 } from "../src/continuity.js"
 
@@ -18,6 +24,15 @@ const get_encoding =
   tiktoken.get_encoding ??
   tiktoken.default?.get_encoding ??
   tiktoken["module.exports"]?.get_encoding
+
+const originalXdgConfigHome = process.env.XDG_CONFIG_HOME
+const testConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "continuity-config-"))
+process.env.XDG_CONFIG_HOME = testConfigHome
+
+afterAll(() => {
+  if (originalXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
+  else process.env.XDG_CONFIG_HOME = originalXdgConfigHome
+})
 
 const FIXTURE = `# CONTINUITY
 
@@ -116,15 +131,15 @@ async function setupFixtureWorktree(fixtures) {
   return worktree
 }
 
-async function readContinuity(worktree) {
+async function readContinuity(worktree, directory = "docs") {
   return await fs.readFile(
-    path.join(worktree, "docs", "CONTINUITY.md"),
+    path.join(worktree, directory, "CONTINUITY.md"),
     "utf8"
   )
 }
 
-async function readMemory(worktree) {
-  return await fs.readFile(path.join(worktree, "docs", "MEMORY.md"), "utf8")
+async function readMemory(worktree, directory = "docs") {
+  return await fs.readFile(path.join(worktree, directory, "MEMORY.md"), "utf8")
 }
 
 async function readLedger(worktree, sessionId) {
@@ -353,6 +368,244 @@ describe("continuity", () => {
     expect(resolveWorktree({}, cwd)).toBe(cwd)
     expect(resolveWorktree({ worktree: filesystemRoot }, cwd)).toBe(cwd)
     expect(resolveWorktree({ worktree: cwd }, filesystemRoot)).toBe(cwd)
+  })
+
+  it("resolves global and project config paths", () => {
+    expect(
+      resolveGlobalConfigPath({
+        xdgConfigHome: "/tmp/xdg-config",
+        homeDirectory: "/tmp/home",
+      })
+    ).toBe("/tmp/xdg-config/opencode/continuity.json")
+    expect(
+      resolveGlobalConfigPath({ xdgConfigHome: "  ", homeDirectory: "/tmp/home" })
+    ).toBe("/tmp/home/.config/opencode/continuity.json")
+    expect(resolveProjectConfigPath("/tmp/project")).toBe(
+      "/tmp/project/.opencode/continuity.json"
+    )
+  })
+
+  it("resolves configured directories relative to worktree and home", () => {
+    const worktree = "/tmp/project"
+    const homeDirectory = "/tmp/home"
+
+    expect(resolveConfiguredDirectory(".ai-memory", worktree, homeDirectory)).toBe(
+      "/tmp/project/.ai-memory"
+    )
+    expect(resolveConfiguredDirectory("/tmp/shared", worktree, homeDirectory)).toBe(
+      "/tmp/shared"
+    )
+    expect(resolveConfiguredDirectory("~", worktree, homeDirectory)).toBe(homeDirectory)
+    expect(resolveConfiguredDirectory("~/.continuity", worktree, homeDirectory)).toBe(
+      "/tmp/home/.continuity"
+    )
+    expect(() => resolveConfiguredDirectory("~other/files", worktree, homeDirectory)).toThrow(
+      "Unsupported home-directory path"
+    )
+  })
+
+  it("derives colocated managed paths with an injected home directory", async () => {
+    const configRoot = await createTempWorktree()
+    const worktree = await createTempWorktree()
+    const homeDirectory = await createTempWorktree()
+    const globalConfigPath = path.join(configRoot, "continuity.json")
+    await fs.writeFile(globalConfigPath, JSON.stringify({ directory: "~/.memory" }), "utf8")
+
+    await expect(
+      resolveContinuityPaths(worktree, { globalConfigPath, homeDirectory })
+    ).resolves.toEqual({
+      directory: path.join(homeDirectory, ".memory"),
+      continuityPath: path.join(homeDirectory, ".memory", "CONTINUITY.md"),
+      memoryPath: path.join(homeDirectory, ".memory", "MEMORY.md"),
+    })
+  })
+
+  it("rejects malformed and invalid directory config files", async () => {
+    const configRoot = await createTempWorktree()
+    const malformedPath = path.join(configRoot, "malformed.json")
+    const invalidPath = path.join(configRoot, "invalid.json")
+    await fs.writeFile(malformedPath, "{", "utf8")
+    await fs.writeFile(invalidPath, JSON.stringify({ directory: " ", extra: true }), "utf8")
+
+    await expect(loadContinuityDirectoryConfig(malformedPath)).rejects.toThrow(
+      malformedPath
+    )
+    await expect(loadContinuityDirectoryConfig(invalidPath)).rejects.toThrow(invalidPath)
+    expect(await loadContinuityDirectoryConfig(path.join(configRoot, "missing.json"))).toBeNull()
+  })
+
+  it("uses global config relative to the worktree and creates its directory", async () => {
+    const configRoot = await createTempWorktree()
+    const worktree = await setupFixtureWorktree({
+      ".placeholder": "",
+    })
+    await fs.mkdir(path.join(configRoot, "opencode"), { recursive: true })
+    await fs.writeFile(
+      path.join(configRoot, "opencode", "continuity.json"),
+      JSON.stringify({ directory: ".ai-memory" }),
+      "utf8"
+    )
+    const previousXdgConfigHome = process.env.XDG_CONFIG_HOME
+    process.env.XDG_CONFIG_HOME = configRoot
+
+    try {
+      await tool.execute(
+        {
+          command: "update",
+          updates: [
+            {
+              section: "PLANS",
+              provenance: "USER",
+              text: "Global configured location.",
+            },
+          ],
+        },
+        { worktree }
+      )
+    } finally {
+      if (previousXdgConfigHome === undefined) {
+        delete process.env.XDG_CONFIG_HOME
+      } else {
+        process.env.XDG_CONFIG_HOME = previousXdgConfigHome
+      }
+    }
+
+    expect(await readContinuity(worktree, ".ai-memory")).toContain(
+      "Global configured location."
+    )
+    await expect(readContinuity(worktree)).rejects.toThrow()
+  })
+
+  it("prefers project config over global config", async () => {
+    const configRoot = await createTempWorktree()
+    const worktree = await setupFixtureWorktree({
+      ".opencode/continuity.json": JSON.stringify({ directory: ".project-memory" }),
+    })
+    await fs.mkdir(path.join(configRoot, "opencode"), { recursive: true })
+    await fs.writeFile(
+      path.join(configRoot, "opencode", "continuity.json"),
+      JSON.stringify({ directory: ".global-memory" }),
+      "utf8"
+    )
+    const previousXdgConfigHome = process.env.XDG_CONFIG_HOME
+    process.env.XDG_CONFIG_HOME = configRoot
+
+    try {
+      await tool.execute(
+        {
+          command: "update",
+          updates: [
+            {
+              section: "PLANS",
+              provenance: "USER",
+              text: "Project configured location.",
+            },
+          ],
+        },
+        { worktree }
+      )
+    } finally {
+      if (previousXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
+      else process.env.XDG_CONFIG_HOME = previousXdgConfigHome
+    }
+
+    expect(await readContinuity(worktree, ".project-memory")).toContain(
+      "Project configured location."
+    )
+    await expect(readContinuity(worktree, ".global-memory")).rejects.toThrow()
+  })
+
+  it("writes to an absolute directory configured globally", async () => {
+    const configRoot = await createTempWorktree()
+    const externalDirectory = path.join(await createTempWorktree(), "memory")
+    const worktree = await createTempWorktree()
+    await fs.mkdir(path.join(configRoot, "opencode"), { recursive: true })
+    await fs.writeFile(
+      path.join(configRoot, "opencode", "continuity.json"),
+      JSON.stringify({ directory: externalDirectory }),
+      "utf8"
+    )
+    const previousXdgConfigHome = process.env.XDG_CONFIG_HOME
+    process.env.XDG_CONFIG_HOME = configRoot
+
+    try {
+      await tool.execute(
+        {
+          command: "update",
+          updates: [
+            {
+              section: "PLANS",
+              provenance: "USER",
+              text: "Absolute configured location.",
+            },
+          ],
+        },
+        { worktree }
+      )
+    } finally {
+      if (previousXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
+      else process.env.XDG_CONFIG_HOME = previousXdgConfigHome
+    }
+
+    expect(await fs.readFile(path.join(externalDirectory, "CONTINUITY.md"), "utf8")).toContain(
+      "Absolute configured location."
+    )
+    await expect(readContinuity(worktree)).rejects.toThrow()
+  })
+
+  it("rejects invalid project configuration without writing managed files", async () => {
+    const worktree = await setupFixtureWorktree({
+      ".opencode/continuity.json": '{"directory":".memory","unexpected":true}',
+    })
+    const configPath = resolveProjectConfigPath(worktree)
+
+    await expect(
+      tool.execute(
+        {
+          command: "update",
+          updates: [
+            {
+              section: "PLANS",
+              provenance: "USER",
+              text: "This must not be written.",
+            },
+          ],
+        },
+        { worktree }
+      )
+    ).rejects.toThrow(configPath)
+    await expect(readContinuity(worktree)).rejects.toThrow()
+    await expect(readContinuity(worktree, ".memory")).rejects.toThrow()
+  })
+
+  it("rejects configured paths that are existing files", async () => {
+    const worktree = await setupFixtureWorktree({
+      ".opencode/continuity.json": JSON.stringify({ directory: "not-a-directory" }),
+      "not-a-directory": "file",
+    })
+
+    await expect(resolveContinuityDirectory(worktree)).rejects.toThrow(
+      "not a directory"
+    )
+  })
+
+  it("reads delta memories from the configured directory while retaining worktree ledger identity", async () => {
+    const worktree = await setupFixtureWorktree({
+      ".opencode/continuity.json": JSON.stringify({ directory: ".memory" }),
+      ".memory/CONTINUITY.md": DELTA_FIXTURE,
+    })
+    const sessionId = "configured-delta"
+
+    const output = await tool.execute(
+      { command: "read", read: { sessionId } },
+      { worktree }
+    )
+
+    expect(output).toContain("Shared plan memory.")
+    expect(await readLedger(worktree, sessionId)).toMatchObject({
+      version: 1,
+      sessionId,
+    })
   })
 
   it("fails when a required section header is missing", async () => {
@@ -1021,6 +1274,34 @@ describe("continuity", () => {
       memoryError = error
     }
     expect(memoryError).not.toBeNull()
+  })
+
+  it("archives compaction output beside a configured continuity file", async () => {
+    const worktree = await setupFixtureWorktree({
+      ".opencode/continuity.json": JSON.stringify({ directory: ".memory" }),
+      ".memory/CONTINUITY.md": FIXTURE,
+    })
+
+    await tool.execute(
+      {
+        command: "update",
+        updates: [
+          {
+            section: "PROGRESS",
+            provenance: "TOOL",
+            text: "Trigger configured compaction.",
+          },
+        ],
+        compaction: { upperTokenThreshold: 50 },
+      },
+      { worktree }
+    )
+
+    expect(await readContinuity(worktree, ".memory")).toContain("# CONTINUITY")
+    expect(await readMemory(worktree, ".memory")).toContain(
+      "Existing plan entry."
+    )
+    await expect(readMemory(worktree)).rejects.toThrow()
   })
 
   it("truncates over-limit sections and archives removed lines", async () => {

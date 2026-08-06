@@ -33,6 +33,8 @@ const DEFAULT_READ_LINES_PER_SECTION = 5
 const DEFAULT_READ_MODE = "delta"
 const SESSION_LEDGER_VERSION = 1
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+const CONTINUITY_FILE_NAME = "CONTINUITY.md"
+const MEMORY_FILE_NAME = "MEMORY.md"
 
 const SECTION_RATIO_WEIGHTS = {
   PLANS: 4339,
@@ -326,6 +328,123 @@ function resolveWorktree(context, cwd = process.cwd()) {
   return resolvedWorktree
 }
 
+function resolveGlobalConfigPath({
+  xdgConfigHome = process.env.XDG_CONFIG_HOME,
+  homeDirectory = os.homedir(),
+} = {}) {
+  const configHome =
+    typeof xdgConfigHome === "string" && xdgConfigHome.trim()
+      ? xdgConfigHome.trim()
+      : path.join(homeDirectory, ".config")
+  return path.join(configHome, "opencode", "continuity.json")
+}
+
+function resolveProjectConfigPath(worktree) {
+  return path.join(worktree, ".opencode", "continuity.json")
+}
+
+async function loadContinuityDirectoryConfig(configPath) {
+  let content
+  try {
+    content = await fs.readFile(configPath, "utf8")
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error) {
+      if (error.code === "ENOENT") return null
+    }
+    throw error
+  }
+
+  let config
+  try {
+    config = JSON.parse(content)
+  } catch {
+    throw new Error(`Invalid continuity config JSON: ${configPath}`)
+  }
+
+  if (
+    !config ||
+    Array.isArray(config) ||
+    Object.keys(config).length !== 1 ||
+    typeof config.directory !== "string" ||
+    !config.directory.trim()
+  ) {
+    throw new Error(
+      `Invalid continuity config at ${configPath}: expected {"directory":"<path>"}`
+    )
+  }
+
+  return config.directory
+}
+
+function resolveConfiguredDirectory(directory, worktree, homeDirectory = os.homedir()) {
+  const configuredDirectory = directory.trim()
+
+  if (configuredDirectory === "~") return homeDirectory
+  if (configuredDirectory.startsWith("~/")) {
+    return path.join(homeDirectory, configuredDirectory.slice(2))
+  }
+  if (configuredDirectory.startsWith("~")) {
+    throw new Error(`Unsupported home-directory path: ${directory}`)
+  }
+  return path.resolve(worktree, configuredDirectory)
+}
+
+async function resolveContinuityDirectory(worktree, options = {}) {
+  const projectConfigPath =
+    options.projectConfigPath ?? resolveProjectConfigPath(worktree)
+  const globalConfigPath =
+    options.globalConfigPath ?? resolveGlobalConfigPath(options)
+  const projectDirectory = await loadContinuityDirectoryConfig(projectConfigPath)
+  const globalDirectory =
+    projectDirectory ?? (await loadContinuityDirectoryConfig(globalConfigPath))
+  const configuredDirectory = globalDirectory ?? "docs"
+  const sourcePath = projectDirectory
+    ? projectConfigPath
+    : globalDirectory
+      ? globalConfigPath
+      : null
+
+  let directory
+  try {
+    directory = resolveConfiguredDirectory(
+      configuredDirectory,
+      worktree,
+      options.homeDirectory
+    )
+  } catch (error) {
+    if (sourcePath && error instanceof Error) {
+      throw new Error(`${error.message} in ${sourcePath}`)
+    }
+    throw error
+  }
+
+  try {
+    const stats = await fs.stat(directory)
+    if (!stats.isDirectory()) {
+      throw new Error(`Configured continuity directory is not a directory: ${directory}`)
+    }
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return directory
+    }
+    if (sourcePath && error instanceof Error) {
+      throw new Error(`${error.message} (configured by ${sourcePath})`)
+    }
+    throw error
+  }
+
+  return directory
+}
+
+async function resolveContinuityPaths(worktree, options = {}) {
+  const directory = await resolveContinuityDirectory(worktree, options)
+  return {
+    directory,
+    continuityPath: path.join(directory, CONTINUITY_FILE_NAME),
+    memoryPath: path.join(directory, MEMORY_FILE_NAME),
+  }
+}
+
 async function loadSessionLedger(filePath, worktree, sessionId) {
   try {
     const content = await fs.readFile(filePath, "utf8")
@@ -475,7 +594,7 @@ async function readContinuityFile(filePath) {
   } catch (error) {
     if (error && typeof error === "object" && "code" in error) {
       if (error.code === "ENOENT") {
-        throw new Error("docs/CONTINUITY.md not found")
+        throw new Error(`CONTINUITY.md not found: ${filePath}`)
       }
     }
     throw error
@@ -769,17 +888,23 @@ export {
   deriveMemoryId,
   hashMemoryContent,
   hashWorktreePath,
+  loadContinuityDirectoryConfig,
   loadSessionLedger,
   normalizeMemoryContent,
   parseContinuityEntry,
   resolveLedgerPath,
+  resolveConfiguredDirectory,
+  resolveContinuityDirectory,
+  resolveContinuityPaths,
+  resolveGlobalConfigPath,
+  resolveProjectConfigPath,
   resolveWorktree,
   saveSessionLedger,
 }
 
 export default tool({
   description:
-    "Read or update docs/CONTINUITY.md in the active worktree/current directory. READ defaults to read.mode=\"delta\". You MUST provide read.sessionId for read unless you explicitly set read.mode=\"tail\". Delta mode returns only new/changed memories for that session; tail mode is the only read mode that does not need sessionId. UPDATE: appends validated entries (updates[]) and optional compaction.",
+    "Read or update CONTINUITY.md in the configured continuity directory. READ defaults to read.mode=\"delta\". You MUST provide read.sessionId for read unless you explicitly set read.mode=\"tail\". Delta mode returns only new/changed memories for that session; tail mode is the only read mode that does not need sessionId. UPDATE: appends validated entries (updates[]) and optional compaction.",
   args: {
     command: tool.schema.enum(["read", "update"]),
     updates: tool.schema
@@ -826,12 +951,7 @@ export default tool({
   },
   async execute(args, context) {
     const worktree = resolveWorktree(context)
-
-    const continuityPath = path.join(
-      worktree,
-      "docs",
-      "CONTINUITY.md"
-    )
+    const { continuityPath, memoryPath } = await resolveContinuityPaths(worktree)
 
     if (args.command === "read") {
       if (args.updates && args.updates.length > 0) {
@@ -880,7 +1000,6 @@ export default tool({
     }
 
     const timestamp = `${new Date().toISOString().slice(0, 16)}Z`
-    const memoryPath = path.join(worktree, "docs", "MEMORY.md")
     const compactionConfig = resolveCompactionConfig(args.compaction)
 
     const updatesBySection = new Map()
@@ -910,7 +1029,7 @@ export default tool({
           const compactionEntry = buildEntry(timestamp, {
             section: "DISCOVERIES",
             provenance: "TOOL",
-            text: "Compaction triggered: exceeded upper token threshold; truncated oldest entries to at or below lower target; archived to docs/MEMORY.md.",
+            text: "Compaction triggered: exceeded upper token threshold; truncated oldest entries to at or below lower target; archived to MEMORY.md.",
           })
           compactionEntriesBySection.set("DISCOVERIES", [compactionEntry])
           insertEntriesBySection(
