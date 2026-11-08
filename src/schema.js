@@ -5,7 +5,9 @@ export const description = "Branch-isolated continuity for primary agents and su
 export const input = {
   type: "object", additionalProperties: false, required: ["command"],
   properties: {
-    command: { type: "string", enum: ["read", "update", "status", "distill"] },
+    command: { type: "string", enum: ["read", "update", "status", "distill", "search"] },
+    query: { type: "string", minLength: 1, maxLength: 200, description: "search command: case-insensitive substring matched against every retained entry (all branches with all=true, default current branch + shared knowledge). Results are memory IDs for read.memoryId." },
+    all: { type: "boolean", description: "search command: sweep every branch of this repository instead of the current branch + shared knowledge." },
     branch: { type: "string", minLength: 1 },
     updates: { type: "array", minItems: 1, maxItems: 100, items: {
       type: "object", additionalProperties: false, required: ["section", "provenance", "text"],

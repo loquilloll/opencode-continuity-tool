@@ -161,9 +161,16 @@ async function readLocked(scope, args, context, memory) {
   }
   const entries = await sourceEntries(scope)
   if (args.read?.memoryId) {
+    // Shared records are retrievable by their stable id alongside branch sources.
+    const sharedMatch = args.read.memoryId.startsWith("shared-")
+      ? (memory.shared ?? []).filter((record) => record.id === args.read.memoryId)
+      : []
     const matches = entries.filter((entry) => entry.memoryId === args.read.memoryId)
-    if (!matches.length) throw new Error(`Unknown memory ID: ${args.read.memoryId}`)
-    const block = matches.map((entry) => entry.line).join("\n")
+    if (!matches.length && !sharedMatch.length) throw new Error(`Unknown memory ID: ${args.read.memoryId}`)
+    const block = [
+      ...matches.map((entry) => entry.line),
+      ...sharedMatch.map((record) => `- [id:${record.id}] [shared] ${record.text} (cited by ${record.citations.length} source${record.citations.length === 1 ? "" : "s"})`),
+    ].join("\n")
     if (tokens(output + block) > 8000) throw new Error(`Memory ${args.read.memoryId} exceeds targeted read budget`)
     return output + block
   }
@@ -205,8 +212,55 @@ async function readLocked(scope, args, context, memory) {
   return output + branch + (read.mode === "delta" && returnedUnseen < unseen.length ? "\n[More unseen memories remain; read again.]" : tailOmitted ? "\n[Some tail entries omitted by token budget; use targeted ID reads.]" : "") || "No new or changed task memories."
 }
 
+// The store lives under .git, invisible to ripgrep/grep; this is the look-back beyond bounded reads.
+const SEARCH_RESULT_LIMIT = 20
+const SEARCH_SCAN_LIMIT = 5000
+
+async function searchLocked(scope, args, memory, branchLabel) {
+  const query = typeof args.query === "string" ? args.query.trim().toLowerCase() : ""
+  if (!query || query.length > 200) throw new Error("search.query must be 1-200 characters")
+  const results = []
+  let scanned = 0
+  let truncated = false
+  const consider = (text, id, where) => {
+    if (results.length >= SEARCH_RESULT_LIMIT) return
+    if (!text.toLowerCase().includes(query)) return
+    results.push(`[${where}] ${id}: ${text.length > 160 ? `${text.slice(0, 157)}...` : text}`)
+  }
+  for (const record of memory.shared ?? []) consider(record.text, record.id, "shared")
+  for (const source of await allBranchSources(scope, scope.branchKey)) consider(source.text, source.id, branchLabel)
+  if (args.all) {
+    const branches = await fs.readdir(path.join(scope.storeRoot, "branches"), { withFileTypes: true }).catch(() => [])
+    for (const entry of branches) {
+      if (!entry.isDirectory() || !entry.name.startsWith("refs-heads-") || entry.name === scope.branchKey) continue
+      // Store keys are sanitized+hashed; label with the readable prefix when available.
+      const state = await readJson(path.join(scope.storeRoot, "branches", entry.name, "state.json"), null)
+      const label = state?.identity?.name?.replace("refs/heads/", "")?.slice(0, 40) ?? entry.name.slice(0, 24)
+      for (const source of await allBranchSources(scope, entry.name)) {
+        if (++scanned > SEARCH_SCAN_LIMIT) { truncated = true; break }
+        consider(source.text, source.id, label)
+      }
+      if (truncated) break
+    }
+  }
+  const header = results.length ? `${results.length} match${results.length === 1 ? "" : "es"} for "${args.query.trim()}"${truncated ? " (scan truncated; refine the query)" : ""}. Retrieve full entries with read.memoryId:\n` : `No matches for "${args.query.trim()}".\n`
+  return header + results.join("\n")
+}
+
+async function allBranchSources(scope, branchDir) {
+  const sourcesDir = path.join(scope.storeRoot, "branches", branchDir, "sources")
+  const names = await fs.readdir(sourcesDir).catch(() => [])
+  const sources = []
+  for (const name of names.slice(0, SEARCH_SCAN_LIMIT)) {
+    if (!name.endsWith(".json")) continue
+    const record = await readJson(path.join(sourcesDir, name), null)
+    if (record?.id && typeof record.text === "string") sources.push(record)
+  }
+  return sources
+}
+
 export async function executeContinuity(args, context, options = {}) {
-  if (!["read", "update", "status", "distill"].includes(args.command)) throw new Error("Unknown continuity command")
+  if (!["read", "update", "status", "distill", "search"].includes(args.command)) throw new Error("Unknown continuity command")
   const scope = await continuityScope(args, context)
   if (args.command === "distill" && !options.generate) throw new Error("Distillation requires the continuity plugin")
   if (args.command !== "read" && args.branch !== undefined) throw new Error("branch selects intentional reads only; writes follow the calling checkout")
@@ -214,6 +268,8 @@ export async function executeContinuity(args, context, options = {}) {
   const result = await withStore(scope, async () => {
     await archiveLegacy(scope, config)
     const memory = await inspectMemory(scope)
+    // search is read-only: no state mutation, no epoch refresh, no ledger writes.
+    if (args.command === "search") return searchLocked(scope, args, memory, scope.identity.kind === "branch" ? scope.identity.name.replace("refs/heads/", "") : "branch")
     const state = await readState(scope)
     await refreshEpoch(scope, state, config)
     if (args.command === "distill") return null

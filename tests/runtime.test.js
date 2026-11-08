@@ -133,6 +133,39 @@ describe("runtime with physical Git workspaces", () => {
     expect(second).not.toContain("small after")
   })
 
+  test("search reaches history beyond the read window, across branches and shared, and ids retrieve", async () => {
+    const f = await fixture()
+    await f.update("ancient-context needle-alpha was handled here")
+    await f.run({ command: "update", updates: [{ section: "DISCOVERIES", provenance: "CODE", text: "shared will carry needle-beta after promotion" }] })
+    const b = await (async () => { const { execFileSync } = await import("node:child_process"); execFileSync("git", ["branch", "search-b"], { cwd: f.repo }); return f.worktree("wt-search-b", "search-b", true) })()
+    await f.run({ command: "update", updates: [{ section: "PROGRESS", provenance: "TOOL", text: "other branch recorded needle-gamma" }] }, b)
+
+    const branchHit = await f.run({ command: "search", query: "needle-alpha" })
+    expect(branchHit).toContain("needle-alpha was handled here")
+    expect(branchHit).toContain("match for")
+
+    const sharedMiss = await f.run({ command: "search", query: "needle-beta" })
+    // Not yet distilled: found as a branch source on main, labeled accordingly.
+    expect(sharedMiss).toContain("needle-beta")
+    expect(sharedMiss).toContain("[main]")
+    expect(await f.run({ command: "search", query: "nothing-matches-this" })).toContain("No matches")
+
+    const all = await f.run({ command: "search", query: "needle", all: true })
+    expect(all).toContain("needle-alpha")
+    expect(all).toContain("search-b")
+    expect(all).toContain("needle-gamma")
+
+    const id = all.split("\n").find((line) => line.includes("needle-gamma"))?.match(/\] ([^:]+):/)?.[1]
+    expect(id).toBeTruthy()
+    // Cross-branch hits retrieve through the intentional-read branch selector.
+    const retrieved = await f.run({ command: "read", branch: "search-b", read: { memoryId: id } })
+    expect(retrieved).toContain("needle-gamma")
+
+    await expect(f.run({ command: "search" })).rejects.toThrow("search.query")
+    // search has no branch selector: current branch + shared, or all=true.
+    await expect(f.run({ command: "search", query: "needle", branch: "other" })).rejects.toThrow("read-only selector")
+  })
+
   test("branch selector is rejected for updates before any store mutation", async () => {
     const f = await fixture()
     await expect(f.run({ command: "update", branch: "other", updates: [{ section: "PROGRESS", provenance: "TOOL", text: "no cross-branch writes" }] })).rejects.toThrow("read-only selector")

@@ -9,7 +9,16 @@ export default tool({
   description:
     "Branch-isolated continuity shared by primary agents and subagents. Read shared knowledge plus this branch's progress; update deliberate findings. Read defaults to delta and requires sessionId unless mode=tail. status reports pending work. distill requires plugin installation. Load the `continuity` skill for when/what to record and read.",
   args: {
-    command: tool.schema.enum(["read", "update", "status", "distill"]),
+    command: tool.schema.enum(["read", "update", "status", "distill", "search"]),
+    query: tool.schema
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe(
+        'search command: substring matched against every retained entry (current branch + shared by default; all=true sweeps every branch). Results are memory IDs for read.memoryId.'
+      ),
+    all: tool.schema.boolean().optional(),
     branch: tool.schema.string().optional(),
     updates: tool.schema
       .array(

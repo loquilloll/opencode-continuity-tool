@@ -19,6 +19,8 @@ Read again when:
 - a user asks about the state, direction, or progress of the current work;
 - you're about to spawn a subagent and want to brief it (or it will read the same branch itself).
 
+**When grep can't help, search.** Continuity memory is invisible to file searches (it lives under Git metadata), so when hunting for prior context — "did we already handle X?", "what was that codename/flag/error?" — use `search` instead of ripgrep, then retrieve hits with `read.memoryId`. Search covers every entry ever recorded, including entries that aged out of `read`'s bounded window and entries already distilled into shared knowledge.
+
 **Update on meaningful delta only.** After a decision, discovery, course change, or completion — not after every tool call. One update call may carry several entries.
 
 **Update before declaring done.** A task isn't finished until its outcome is recorded (see Definition of Done below).
@@ -27,6 +29,7 @@ Read again when:
 
 All commands go through the `continuity` tool. Never write the store files directly — hand edits can corrupt fencing/revision state and will be rejected or, worse, block the store.
 
+- **search** — look back beyond what `read` returns. The store lives under Git metadata, invisible to grep/ripgrep, and `read` is bounded to recent/unseen entries — but every deliberate entry is retained forever. `search` finds them by substring (current branch + shared knowledge by default; `all: true` sweeps every branch in the repository, results labeled by branch). Returns memory IDs; retrieve same-branch or shared hits with `read.memoryId`, and hits labeled with another branch with `read` plus that `branch` selector and `read.memoryId`.
 - **read** — bounded view: shared knowledge + this branch's checkpoint + new entries. Default mode is `delta`, which needs `sessionId` (use the current session's id; repeat calls return only what's new). Use `mode: "tail"` for a quick latest-entries look without a sessionId. If a `[Blocked memory …]` marker appears, use `read.memoryId` for that entry.
 - **update** — submit deliberate entries. Each entry: `section`, `provenance`, `text` (single line, ≤400 chars), optional `plan` slug. Timestamps and IDs are assigned for you.
 - **status** — pending distillation work, last errors, config, branch attribution. Use it when something seems stuck or before reporting state.
