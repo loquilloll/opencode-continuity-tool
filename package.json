@@ -2,8 +2,17 @@
   "name": "opencode-continuity-tool",
   "private": true,
   "type": "module",
+  "main": "./src/plugin.js",
+  "exports": {
+    ".": "./src/plugin.js",
+    "./tool": "./src/continuity.js"
+  },
+  "scripts": {
+    "test": "bun test tests --timeout 20000"
+  },
   "dependencies": {
     "@opencode-ai/plugin": "1.17.8",
+    "jsonc-parser": "3.3.1",
     "tiktoken": "^1.0.22"
   }
 }

@@ -1,12 +1,29 @@
 # opencode-continuity-tool
 
-A plugin for [OpenCode](https://opencode.ai/) that provides structured, validated management of `CONTINUITY.md` -- a living document designed to survive context compaction across AI coding sessions. The tool enforces canonical formatting, shared UTC timestamps, provenance tracking, and automatic token-budget compaction with archival to the colocated `MEMORY.md`. Both files use the selected continuity directory, which defaults to `<worktree>/docs`.
+Structured continuity for OpenCode: deliberate branch-local entries and bounded repository-wide knowledge. **Branch runtime and dual-adapter integration are in progress, not verified support.** The approved contract is [plan 06](.opencode/plans/06-branch-isolated-continuity.md); see the [operator guide](docs/continuity-tool.md) for current scope, configuration, commands and maintenance. The API examples below preserve the legacy custom-tool entry contract; legacy directory/ledger behavior is not the new Git storage contract.
+
+## Branch continuity
+
+- Git journals live in `<git-common-dir>/opencode-continuity/`, never in commits. Primary and subagent sessions share their branch; other branches see only the distilled shared baseline.
+- The plugin automatically distills deliberate entries, not conversations. Deleting a branch does not delete its journal; reusing its name resumes it.
+- Configure global OpenCode `continuity.jsonc`, overridden per field by workspace `.opencode/continuity.jsonc`:
+
+  ```jsonc
+  { "distillation": { "model": "zai-coding-plan/glm-5.3-flash", "intervalHours": 2.5, "reasoning": "low" } }
+  ```
+
+  `reasoning` is optional (`none|minimal|low|medium|high|xhigh|max`, the cross-provider effort convention your runtimes lower per protocol). Without it the provider's default effort applies — which for reasoning models can consume the entire completion budget before text (observed live: 3997/4000 tokens). The engine still requests clamped output headroom as a provider-portable fallback.
+
+- `status` reports pending work, configuration ownership and errors; `distill` requests an immediate plugin run. Normal reads are bounded and support `read.memoryId` for retained source lookup.
+- Legacy files are archived automatically without modifying originals or treating mixed history as shared truth. Local Git metadata needs a separate backup.
+
+Install dependencies with `bun install`. For **opf18**, configure the plugin file URL in `plugin`; for **opf2x**, configure this package directory in `plugins` (its export is `src/plugin.js`). Do not also register the standalone tool. Live acceptance results and any remaining runtime blockers are recorded in [integration evidence](tests/integration/README.md).
 
 ## Why
 
 AI coding assistants lose context between sessions. `CONTINUITY.md` solves this by acting as a persistent briefing document that captures plans, decisions, progress, discoveries, and outcomes in a structured, machine-readable format. This tool ensures every entry is validated, timestamped, and formatted consistently -- and that the document never grows beyond a configurable token budget.
 
-## Features
+## Legacy entry-tool features (compatibility reference)
 
 - **Two commands** -- `read` (non-mutating tail view) and `update` (append entries with optional compaction)
 - **Shared UTC timestamp** -- all entries in a single `update` call share one timestamp
@@ -24,7 +41,9 @@ AI coding assistants lose context between sessions. `CONTINUITY.md` solves this 
 - [OpenCode](https://opencode.ai/) (to use as a plugin tool)
 - [tiktoken](https://github.com/openai/tiktoken) (installed as a dependency; used for token counting)
 
-## Installation
+## Standalone custom-tool installation (not automatic generation)
+
+For the dual-target plugin installation and its pending acceptance gates, use the [operator guide](docs/continuity-tool.md#installation-and-modes). Do not register both modes. The example below is the legacy custom-tool setup, not the plugin loader contract.
 
 1. Clone this repository into your project or as a standalone tool:
 
@@ -49,9 +68,9 @@ AI coding assistants lose context between sessions. `CONTINUITY.md` solves this 
 
    See the [OpenCode custom tools documentation](https://opencode.ai/docs/custom-tools/) for full configuration details.
 
-## File location configuration
+## Legacy non-Git custom-tool location configuration
 
-The tool always keeps the fixed filenames `CONTINUITY.md` and `MEMORY.md` together in one selected directory. Without configuration, that directory is `<worktree>/docs`.
+Legacy non-Git standalone tools keep `CONTINUITY.md` and `MEMORY.md` together, defaulting to `<worktree>/docs`. They support the historical `read`/`update` operations only; targeted reads/status/distillation are explicitly rejected rather than querying a different store. Git calls use branch-isolated storage: `directory` there identifies legacy import sources only, never disables branch isolation. New runtime configuration uses global OpenCode-config-folder `continuity.jsonc` and physical-workspace `.opencode/continuity.jsonc`, merged per nested field; the directory-only JSON contract below is compatibility behavior, not the new configuration schema.
 
 Location configuration uses standalone JSON sidecar files read by this tool. These are not keys in `opencode.json` or OpenCode's configuration schema.
 
@@ -74,9 +93,9 @@ Sidecars must contain valid JSON with exactly one non-blank string field named `
 
 Changing the configured directory does not move or copy existing files. Absolute directories can intentionally share one continuity document between projects, but concurrent writers are not protected by a cross-process lock.
 
-## Document Structure
+## Entry document structure
 
-The tool manages `CONTINUITY.md` in the selected directory, defaulting to `<worktree>/docs`, with five canonical sections:
+Source journals retain five canonical sections; their location depends on mode (Git branch store versus legacy non-Git selected directory):
 
 ```markdown
 # CONTINUITY
@@ -120,7 +139,7 @@ Legacy bullets without `[id:...]` remain readable. The tool derives a determinis
 - The tool normalizes memory text before hashing by collapsing whitespace and line-ending differences; whitespace-only changes are treated as equivalent.
 - Content hashes use the format `sha256:<hex>` so future retrieval phases can suppress unchanged entries within a session.
 
-## Usage
+## Legacy entry API usage
 
 ### Read Command
 
@@ -201,7 +220,7 @@ continuity({
 
 **Output:** An empty output string on success. Updated entries are written to `CONTINUITY.md` in the selected directory; validation and runtime failures are returned as errors.
 
-## API Reference
+## Legacy entry API reference
 
 ### Arguments
 
@@ -245,7 +264,7 @@ Threshold precedence is: explicit `upperTokenThreshold`, else legacy `totalToken
 | `includePinned` | `boolean` | `false` | In delta mode, include pinned entries even when unchanged. |
 | `includeUnresolved` | `boolean` | `false` | In delta mode, include entries with `[status:unresolved]` even when unchanged. |
 
-For delta mode, the seen-ledger remains in the OS temporary directory and is keyed by the resolved worktree plus `sessionId`. Changing the selected continuity directory therefore does not change ledger identity or mutate managed files.
+For legacy non-Git delta mode, the seen-ledger remains in OS temporary storage keyed by worktree plus `sessionId`. Git branch runtime instead scopes ledgers by store + branch + session; migration can replay once. See the operator guide for bounded reads and targeted IDs.
 
 ## Compaction
 
@@ -285,7 +304,7 @@ These weights reflect typical real-world usage patterns where PROGRESS entries d
 ## [MILESTONES]
 ```
 
-## Validation & Error Handling
+## Legacy validation and error handling
 
 The tool rejects invalid input or location configuration without modifying the managed files:
 
@@ -357,7 +376,7 @@ bun test tests/continuity.test.js --timeout 20000
 | Mixed-format compaction | Compaction continues to handle legacy and ID-prefixed entries |
 | Legacy threshold compatibility | `totalTokenThreshold` maps correctly to upper/lower |
 
-## Project Structure
+## Historical standalone project structure
 
 This repository shows the default layout used when no location sidecar selects another directory:
 
@@ -380,7 +399,7 @@ opencode-continuity-tool/
   bun.lock
 ```
 
-## Roadmap
+## Historical compaction roadmap (not current implementation scope)
 
 The compaction roadmap below is scoped to the original archival flow. The broader layered-memory rollout is tracked separately in `docs/plans/04-layered-continuity-memory.md`.
 

@@ -19,11 +19,51 @@ import tool, {
   resolveWorktree,
 } from "../src/continuity.js"
 
+it("does not redirect legacy non-Git IDs into an unrelated transactional store", async () => {
+  const worktree = await createTempWorktree()
+  await tool.execute({ command: "update", updates: [{ section: "PROGRESS", provenance: "TOOL", text: "Legacy local work" }] }, { worktree })
+  await expect(tool.execute({ command: "read", read: { memoryId: "legacy-id" } }, { worktree })).rejects.toThrow("Non-Git standalone")
+  await expect(tool.execute({ command: "status" }, { worktree })).rejects.toThrow("Non-Git standalone")
+})
+import { executeLegacy, tokens, TEMPLATE } from "../src/core.js"
+
 const tiktoken = await import("tiktoken")
 const get_encoding =
   tiktoken.get_encoding ??
   tiktoken.default?.get_encoding ??
   tiktoken["module.exports"]?.get_encoding
+
+it("runs the SDK-independent core against an overlay with separate ledger identities", async () => {
+  const files = new Map()
+  const io = {
+    async readFile(filePath) {
+      if (!files.has(filePath)) throw Object.assign(new Error("missing"), { code: "ENOENT" })
+      return files.get(filePath)
+    },
+    async writeFile(filePath, content) { files.set(filePath, content) },
+    async mkdir() {},
+    async rename(from, to) { files.set(to, files.get(from)); files.delete(from) },
+  }
+  const directory = path.resolve("overlay-only")
+  const options = { paths: { directory }, fs: io, ledgerIdentity: "branch-a" }
+  await executeLegacy({
+    command: "update",
+    updates: [{ section: "PROGRESS", provenance: "CODE", text: "Overlay update." }],
+    compaction: { enabled: false },
+  }, {}, options)
+  expect(files.get(path.join(directory, "CONTINUITY.md"))).toContain("Overlay update.")
+  const read = { command: "read", read: { sessionId: "overlay-session" } }
+  expect(await executeLegacy(read, {}, options)).toContain("Overlay update.")
+  expect(await executeLegacy(read, {}, options)).toBe("No new or changed task memories.")
+  expect(await executeLegacy(read, {}, { ...options, ledgerIdentity: "branch-b" })).toContain("Overlay update.")
+  const encoder = get_encoding("cl100k_base")
+  try {
+    expect(tokens(TEMPLATE)).toBe(encoder.encode(TEMPLATE).length)
+    expect(tokens("again")).toBe(encoder.encode("again").length)
+  } finally {
+    encoder.free()
+  }
+})
 
 const originalXdgConfigHome = process.env.XDG_CONFIG_HOME
 const testConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "continuity-config-"))
@@ -362,7 +402,7 @@ describe("continuity", () => {
   })
 
   it("falls back to the current working directory when worktree is missing or root-only", () => {
-    const cwd = path.join(path.sep, "tmp", "continuity-cwd")
+    const cwd = path.resolve(path.sep, "tmp", "continuity-cwd")
     const filesystemRoot = path.parse(cwd).root
 
     expect(resolveWorktree({}, cwd)).toBe(cwd)
@@ -376,12 +416,12 @@ describe("continuity", () => {
         xdgConfigHome: "/tmp/xdg-config",
         homeDirectory: "/tmp/home",
       })
-    ).toBe("/tmp/xdg-config/opencode/continuity.json")
+    ).toBe(path.join("/tmp/xdg-config", "opencode", "continuity.json"))
     expect(
       resolveGlobalConfigPath({ xdgConfigHome: "  ", homeDirectory: "/tmp/home" })
-    ).toBe("/tmp/home/.config/opencode/continuity.json")
+    ).toBe(path.join("/tmp/home", ".config", "opencode", "continuity.json"))
     expect(resolveProjectConfigPath("/tmp/project")).toBe(
-      "/tmp/project/.opencode/continuity.json"
+      path.join("/tmp/project", ".opencode", "continuity.json")
     )
   })
 
@@ -390,14 +430,14 @@ describe("continuity", () => {
     const homeDirectory = "/tmp/home"
 
     expect(resolveConfiguredDirectory(".ai-memory", worktree, homeDirectory)).toBe(
-      "/tmp/project/.ai-memory"
+      path.resolve("/tmp/project", ".ai-memory")
     )
     expect(resolveConfiguredDirectory("/tmp/shared", worktree, homeDirectory)).toBe(
-      "/tmp/shared"
+      path.resolve("/tmp/shared")
     )
     expect(resolveConfiguredDirectory("~", worktree, homeDirectory)).toBe(homeDirectory)
     expect(resolveConfiguredDirectory("~/.continuity", worktree, homeDirectory)).toBe(
-      "/tmp/home/.continuity"
+      path.join("/tmp/home", ".continuity")
     )
     expect(() => resolveConfiguredDirectory("~other/files", worktree, homeDirectory)).toThrow(
       "Unsupported home-directory path"
