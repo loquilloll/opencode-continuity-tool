@@ -1,7 +1,7 @@
 // V2 consumes JSON Schema directly; V1's legacy wrapper retains its Zod contract.
 import { SECTIONS, PROVENANCE } from "./core.js"
 
-export const description = "Branch-isolated continuity for primary agents and subagents. Deliberately record direction, findings and progress. Reads combine shared knowledge with this branch only. Read defaults to delta; supply sessionId (tail needs none). status shows pending distillation; distill requests an immediate run."
+export const description = "Branch-isolated continuity for primary agents and subagents. Deliberately record direction, findings and progress; reads combine shared knowledge with this branch only. Read defaults to delta; supply sessionId (tail needs none). status shows pending distillation; distill requests an immediate run. Load the `continuity` skill for when/what to record and read."
 export const input = {
   type: "object", additionalProperties: false, required: ["command"],
   properties: {

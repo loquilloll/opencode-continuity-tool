@@ -7,7 +7,7 @@ export * from "./core.js"
 
 export default tool({
   description:
-    "Branch-isolated continuity shared by primary agents and subagents. Read shared knowledge plus this branch's progress; update deliberate findings. Read defaults to delta and requires sessionId unless mode=tail. status reports pending work. distill requires plugin installation.",
+    "Branch-isolated continuity shared by primary agents and subagents. Read shared knowledge plus this branch's progress; update deliberate findings. Read defaults to delta and requires sessionId unless mode=tail. status reports pending work. distill requires plugin installation. Load the `continuity` skill for when/what to record and read.",
   args: {
     command: tool.schema.enum(["read", "update", "status", "distill"]),
     branch: tool.schema.string().optional(),

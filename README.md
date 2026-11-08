@@ -17,6 +17,17 @@ Structured continuity for OpenCode: deliberate branch-local entries and bounded 
 - `status` reports pending work, configuration ownership and errors; `distill` requests an immediate plugin run. Normal reads are bounded and support `read.memoryId` for retained source lookup.
 - Legacy files are archived automatically without modifying originals or treating mixed history as shared truth. Local Git metadata needs a separate backup.
 
+### Agent skill (when/how discipline)
+
+The tool description covers arguments; the [`continuity` skill](skills/continuity/SKILL.md) teaches agents *when* to read, *what* to record, and the anti-drift rules (provenance tags, supersede-don't-rewrite, deliberate entries only). Install it globally next to your other skills:
+
+```powershell
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.config\opencode\skill\continuity" | Out-Null
+Copy-Item skills/continuity/SKILL.md "$env:USERPROFILE\.config\opencode\skill\continuity/SKILL.md"
+```
+
+Both the V1 and V2 tool descriptions point agents at the skill; the skill's trigger description loads it at task start, on resume, and before handoff.
+
 Install dependencies with `bun install`. For **opf18**, configure the plugin file URL in `plugin`; for **opf2x**, configure this package directory in `plugins` (its export is `src/plugin.js`). Do not also register the standalone tool. Live acceptance results and any remaining runtime blockers are recorded in [integration evidence](tests/integration/README.md).
 
 ## Why
