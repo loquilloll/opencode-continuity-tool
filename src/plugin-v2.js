@@ -16,7 +16,7 @@ export function generator(context, owned = new Map()) {
     const ref = modelRef(model)
     const catalog = await context.model.list({ types: ["chat"] })
     const selected = catalog.data.find((item) => item.providerID === ref.providerID && item.id === ref.modelID && item.enabled)
-    const outputBudget = checkLimits(selected, maxOutputTokens)
+    const outputBudget = checkLimits(selected, maxOutputTokens, { reasoning })
     const selectedRef = { providerID: ref.providerID, id: ref.modelID }
     const directory = actualDirectory(context.location?.directory)
     const controller = new AbortController()

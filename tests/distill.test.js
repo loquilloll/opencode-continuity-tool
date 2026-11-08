@@ -159,6 +159,19 @@ test("changed meaning creates durable conflict instead of shared overwrite", () 
   expect(parseMemoryDocument("conflicts", renderMemoryDocument("conflicts", result.conflicts))).toHaveLength(1);
 });
 
+test("repeated generation failures back off without losing pending sources", async () => {
+  const { scope } = await fixture();
+  const generate = async () => { throw new Error("provider failed"); };
+  expect((await runDistillation(scope, { manual: true, now: start, generate })).status).toBe("blocked");
+  const first = (await inspect(scope)).state;
+  const retry = Date.parse(first.nextEligibleAt);
+  expect((await runDistillation(scope, { now: retry, generate })).status).toBe("blocked");
+  const second = (await inspect(scope)).state;
+  expect(second.error.count).toBe(2);
+  expect(Date.parse(second.nextEligibleAt) - retry).toBe(2 * (retry - start));
+  expect(second.pendingCount).toBe(1);
+});
+
 test("markdown-fenced model output is parsed after stripping the fences", async () => {
   const { scope, sources } = await fixture();
   const fenced = "```json\n" + JSON.stringify({ checkpoint: [{ text: "Fenced checkpoint", citations: cite(sources[0]) }], proposals: [] }) + "\n```";
@@ -167,11 +180,16 @@ test("markdown-fenced model output is parsed after stripping the fences", async 
   expect((await inspect(scope)).checkpoint[0].text).toBe("Fenced checkpoint");
 });
 
-test("target transcription errors resolve by unique prefix with authoritative prior hash", () => {  const source = { id: "s", contentHash: hashMemoryContent("evidence") };
+test("unique target prefixes require a matching prior hash", () => {  const source = { id: "s", contentHash: hashMemoryContent("evidence") };
   const original = { id: "shared-abcdef12-3456", text: "Original", contentHash: hashMemoryContent("Original"), citations: cite(source) };
-  const updated = applyProposals({ shared: [original], conflicts: [] }, { checkpoint: [], proposals: [proposal(source, { operation: "update", targetId: "shared-abcdef12", priorHash: `sha256:${"0".repeat(64)}`, classification: "equivalent", text: "Original, clarified" })] });
+  const updated = applyProposals({ shared: [original], conflicts: [] }, { checkpoint: [], proposals: [proposal(source, { operation: "update", targetId: "shared-abcdef12", priorHash: original.contentHash, classification: "equivalent", text: "Original, clarified" })] });
   expect(updated.shared).toHaveLength(1);
   expect(updated.shared[0]).toMatchObject({ id: "shared-abcdef12-3456", text: "Original, clarified" });
+  for (const priorHash of [null, "wrong", `sha256:${"0".repeat(64)}`]) {
+    const result = applyProposals({ shared: [original], conflicts: [] }, { checkpoint: [], proposals: [proposal(source, { operation: "update", targetId: original.id, priorHash, classification: "equivalent", text: "Changed" })] });
+    expect(result.shared).toEqual([original]);
+    expect(result.conflicts[0].reason).toContain("prior hash mismatch");
+  }
   try { applyProposals({ shared: [original, { ...original, id: "shared-abcdef99-9999" }], conflicts: [] }, { checkpoint: [], proposals: [proposal(source, { operation: "update", targetId: "shared-abcdef", priorHash: original.contentHash, classification: "equivalent", text: "Original, clarified" })] }); expect.unreachable() }
   catch (error) { expect(error.message).toContain("Unknown target") }
   try { applyProposals({ shared: [original], conflicts: [] }, { checkpoint: [], proposals: [proposal(source, { operation: "update", targetId: "nonexistent", priorHash: original.contentHash, classification: "equivalent", text: "x" })] }); expect.unreachable() }

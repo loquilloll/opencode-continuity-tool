@@ -1,10 +1,16 @@
 import { describe, it, expect } from "bun:test"
 import path from "node:path"
-import plugin, { globalConfigRoot } from "../src/plugin.js"
+import plugin, { checkLimits, globalConfigRoot } from "../src/plugin.js"
 import { server } from "../src/plugin-v1.js"
 import { setup, generator } from "../src/plugin-v2.js"
 
 const directory = path.resolve("test-checkout")
+it("requires output headroom when reasoning is configured", () => {
+  const model = { limit: { context: 16000, output: 4000 } }
+  expect(checkLimits(model, 8000)).toBe(4000)
+  expect(() => checkLimits(model, 8000, { reasoning: "low" })).toThrow("output limit")
+  expect(checkLimits({ limit: { context: 16000, output: 8000 } }, 8000, { reasoning: "low" })).toBe(8000)
+})
 function dependencies() {
   const events = []
   let generate
@@ -130,14 +136,14 @@ describe("installed-host continuity adapters", () => {
       await hooks["experimental.chat.system.transform"]({ sessionID: "owned" }, { system: [{ type: "text", text: "unrelated inherited instructions" }] })
       const output = { options: {} }
       await hooks["chat.params"]({ sessionID: "owned" }, output)
-      expect(output.maxOutputTokens).toBe(4000) // 8000 requested, clamped to the model's 4000 output limit
+      expect(output.maxOutputTokens).toBe(4000)
       expect(output.options.reasoningEffort).toBe("low")
       await expect(hooks["chat.params"]({ sessionID: "owned" }, {})).rejects.toThrow("sanitized")
       await hooks.event({ event: { type: "session.status", properties: { sessionID: "owned", status: { type: "idle" } } } })
       expect(deps.events.some((event) => event[0] === "status")).toBe(false)
       return originalPrompt(request)
     }
-    expect(await deps.generate({ prompt: "data", model: "provider/model", maxOutputTokens: 8000, reasoning: "low" })).toBe('{"checkpoint":"done"}')
+    expect(await deps.generate({ prompt: "data", model: "provider/model", maxOutputTokens: 4000, reasoning: "low" })).toBe('{"checkpoint":"done"}')
     expect(host.calls[0][1].permission).toEqual([{ permission: "*", pattern: "*", action: "deny" }])
     expect(host.calls[1][1].body.tools).toEqual({ "*": false })
     expect(host.calls[1][1].body.model).toEqual({ providerID: "provider", modelID: "model" })

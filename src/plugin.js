@@ -19,11 +19,16 @@ export function modelRef(model) {
   return { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) }
 }
 
-export function checkLimits(model, maxOutputTokens, { floor = 4000 } = {}) {
+export function checkLimits(model, maxOutputTokens, { floor = 4000, reasoning = null } = {}) {
   if (!model || !Number.isInteger(maxOutputTokens) || maxOutputTokens < floor ||
       !(model.limit?.context >= 16000) || !(model.limit?.output >= floor) ||
       (model.limit?.input !== undefined && model.limit.input < 12000)) {
     throw new Error("Configured continuity model is unavailable or cannot support 16000 total tokens (12000 input + 4000 output)")
+  }
+  // A reasoning model whose output limit is below the requested budget can spend the entire
+  // completion on reasoning and return no text on every paid attempt (observed live).
+  if (reasoning && reasoning !== "none" && model.limit.output < maxOutputTokens) {
+    throw new Error(`Configured continuity model output limit ${model.limit.output} cannot fit reasoning "${reasoning}" plus ${floor} tokens of text; disable reasoning or pick a model with output >= ${maxOutputTokens}`)
   }
   // Reasoning models spend completion budget on reasoning; request headroom but never exceed the model's output limit.
   return Math.min(maxOutputTokens, model.limit.output)

@@ -221,42 +221,62 @@ async function searchLocked(scope, args, memory, branchLabel) {
   if (!query || query.length > 200) throw new Error("search.query must be 1-200 characters")
   const results = []
   let scanned = 0
-  let truncated = false
+  let scanTruncated = false, resultTruncated = false, skipped = false
+  const clean = (value) => value.replace(/[\x00-\x1f\x7f-\x9f]+/g, " ")
   const consider = (text, id, where) => {
-    if (results.length >= SEARCH_RESULT_LIMIT) return
     if (!text.toLowerCase().includes(query)) return
-    results.push(`[${where}] ${id}: ${text.length > 160 ? `${text.slice(0, 157)}...` : text}`)
+    text = clean(text)
+    results.push(`[${clean(where)}] ${clean(id)}: ${text.length > 160 ? `${text.slice(0, 157)}...` : text}`)
+    if (results.length >= SEARCH_RESULT_LIMIT) resultTruncated = true
   }
-  for (const record of memory.shared ?? []) consider(record.text, record.id, "shared")
-  for (const source of await allBranchSources(scope, scope.branchKey)) consider(source.text, source.id, branchLabel)
-  if (args.all) {
-    const branches = await fs.readdir(path.join(scope.storeRoot, "branches"), { withFileTypes: true }).catch(() => [])
-    for (const entry of branches) {
-      if (!entry.isDirectory() || !entry.name.startsWith("refs-heads-") || entry.name === scope.branchKey) continue
-      // Store keys are sanitized+hashed; label with the readable prefix when available.
-      const state = await readJson(path.join(scope.storeRoot, "branches", entry.name, "state.json"), null)
-      const label = state?.identity?.name?.replace("refs/heads/", "")?.slice(0, 40) ?? entry.name.slice(0, 24)
-      for (const source of await allBranchSources(scope, entry.name)) {
-        if (++scanned > SEARCH_SCAN_LIMIT) { truncated = true; break }
-        consider(source.text, source.id, label)
+  for (const record of memory.shared ?? []) {
+    consider(record.text, record.id, "shared")
+    if (resultTruncated) break
+  }
+  const scanBranch = async (key, label) => {
+    const sourcesDir = path.join(scope.storeRoot, "branches", key, "sources")
+    const names = await fs.readdir(sourcesDir).catch((error) => { if (error.code === "ENOENT") return []; throw error })
+    for (const name of names.sort()) {
+      if (!name.endsWith(".json")) continue
+      if (scanned >= SEARCH_SCAN_LIMIT) { scanTruncated = true; return }
+      scanned++
+      let source
+      try { source = await readJson(path.join(sourcesDir, name), null) } catch (error) {
+        if (!error.message.startsWith("Malformed JSON:")) throw error
+        skipped = true; continue
       }
-      if (truncated) break
+      if (typeof source?.id !== "string" || !source.id || typeof source.text !== "string") { skipped = true; continue }
+      consider(source.text, source.id, label)
+      if (resultTruncated) return
     }
   }
-  const header = results.length ? `${results.length} match${results.length === 1 ? "" : "es"} for "${args.query.trim()}"${truncated ? " (scan truncated; refine the query)" : ""}. Retrieve full entries with read.memoryId:\n` : `No matches for "${args.query.trim()}".\n`
-  return header + results.join("\n")
-}
-
-async function allBranchSources(scope, branchDir) {
-  const sourcesDir = path.join(scope.storeRoot, "branches", branchDir, "sources")
-  const names = await fs.readdir(sourcesDir).catch(() => [])
-  const sources = []
-  for (const name of names.slice(0, SEARCH_SCAN_LIMIT)) {
-    if (!name.endsWith(".json")) continue
-    const record = await readJson(path.join(sourcesDir, name), null)
-    if (record?.id && typeof record.text === "string") sources.push(record)
+  if (!resultTruncated) await scanBranch(scope.branchKey, branchLabel)
+  if (args.all && !resultTruncated && !scanTruncated) {
+    const branches = await fs.readdir(path.join(scope.storeRoot, "branches"), { withFileTypes: true }).catch((error) => { if (error.code === "ENOENT") return []; throw error })
+    for (const entry of branches) {
+      if (!entry.isDirectory() || entry.name === scope.branchKey) continue
+      let state
+      try { state = await readJson(path.join(scope.storeRoot, "branches", entry.name, "state.json"), null) } catch (error) {
+        if (!error.message.startsWith("Malformed JSON:")) throw error
+        skipped = true; continue
+      }
+      const identity = state?.identity
+      if (!identity || typeof identity !== "object" || typeof identity.kind !== "string") { skipped = true; continue }
+      if (identity?.kind !== "branch") continue
+      if (typeof identity.name !== "string" || !identity.name.startsWith("refs/heads/") || identity.name.length === 11) { skipped = true; continue }
+      const key = `${identity.name.replace(/[^a-zA-Z0-9-]/g, "-").slice(-40)}-${hash(JSON.stringify({ kind: "branch", name: identity.name }))}`
+      if (entry.name !== key) { skipped = true; continue }
+      try { await readState({ ...scope, identity: { kind: "branch", name: identity.name }, branchDir: `branches/${key}` }) } catch (error) {
+        if (!error.message.startsWith("Invalid branch state")) throw error
+        skipped = true; continue
+      }
+      await scanBranch(entry.name, identity.name.slice(11))
+      if (scanTruncated || resultTruncated) break
+    }
   }
-  return sources
+  const warnings = [resultTruncated && "results truncated", scanTruncated && "scan truncated", skipped && "malformed data skipped"].filter(Boolean)
+  const header = (results.length ? `${results.length} match${results.length === 1 ? "" : "es"} for "${clean(args.query.trim())}"` : `No matches for "${clean(args.query.trim())}"`) + `${warnings.length ? ` (${warnings.join("; ")}; results may be incomplete)` : ""}. Retrieve full entries with read.memoryId:\n`
+  return header + results.join("\n")
 }
 
 export async function executeContinuity(args, context, options = {}) {

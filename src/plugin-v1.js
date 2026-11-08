@@ -28,7 +28,7 @@ export async function server(input, dependencies = {}) {
     const catalog = data(await client.provider.list(), "provider.list")
     const provider = catalog.all.find((item) => item.id === ref.providerID)
     if (!catalog.connected.includes(ref.providerID)) throw new Error("Configured continuity provider is not connected")
-    const outputBudget = checkLimits(provider?.models?.[ref.modelID], maxOutputTokens)
+    const outputBudget = checkLimits(provider?.models?.[ref.modelID], maxOutputTokens, { reasoning })
     const controller = new AbortController()
     controllers.add(controller)
     const cancel = () => controller.abort()

@@ -171,6 +171,56 @@ describe("runtime with physical Git workspaces", () => {
     await expect(f.run({ command: "update", branch: "other", updates: [{ section: "PROGRESS", provenance: "TOOL", text: "no cross-branch writes" }] })).rejects.toThrow("read-only selector")
   })
 
+  test("search reports result caps and malformed foreign state and identifies deleted long branches", async () => {
+    const f = await fixture()
+    const branch = `long-${"a".repeat(55)}`
+    git(f.repo, "switch", "-c", branch)
+    await f.update("long branch searchable fact")
+    git(f.repo, "switch", "main")
+    git(f.repo, "branch", "-D", branch)
+    await f.run({ command: "update", updates: Array.from({ length: 21 }, (_, i) => ({ section: "PROGRESS", provenance: "CODE", text: `cap-match-${i}` })) })
+    const scope = await f.scope()
+    const later = path.join(scope.storeRoot, scope.branchDir, "sources", "zzzz.json")
+    await fs.writeFile(later, "{")
+    const capped = await f.run({ command: "search", query: "cap-match" })
+    expect(capped).toContain("results truncated")
+    expect(capped).not.toContain("malformed data skipped")
+    await fs.rm(later)
+    const bad = path.join(scope.storeRoot, "branches", "bad-state")
+    await fs.mkdir(bad, { recursive: true })
+    await fs.writeFile(path.join(bad, "state.json"), "{")
+    const found = await f.run({ command: "search", query: "long branch searchable", all: true })
+    expect(found).toContain("malformed data skipped")
+    expect(found).toContain(`[${branch}]`)
+    const id = found.split("\n").find((line) => line.includes("long branch searchable fact"))?.match(/\] ([^:]+):/)?.[1]
+    expect(await f.run({ command: "read", branch, read: { memoryId: id } })).toContain("long branch searchable fact")
+  })
+
+  test("search sanitizes control characters in displayed records and queries", async () => {
+    const f = await fixture()
+    const scope = await f.scope()
+    const dir = path.join(scope.storeRoot, scope.branchDir, "sources")
+    await fs.mkdir(dir, { recursive: true })
+    await fs.writeFile(path.join(dir, "malicious.json"), JSON.stringify({ id: "id\n[shared] forged", text: "needle\n[shared] forged\u001b[31m" }))
+    const result = await f.run({ command: "search", query: "needle" })
+    expect(result).toContain("needle [shared] forged [31m")
+    expect(result).not.toMatch(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/)
+    expect(result.split("\n")).toHaveLength(2)
+    const noMatch = await f.run({ command: "search", query: "absent\n[shared] forged" })
+    expect(noMatch.split("\n")).toHaveLength(2)
+  })
+
+  test("search reports scan truncation even without matches", async () => {
+    const f = await fixture()
+    const scope = await f.scope()
+    const dir = path.join(scope.storeRoot, scope.branchDir, "sources")
+    await fs.mkdir(dir, { recursive: true })
+    await Promise.all(Array.from({ length: 5001 }, (_, i) => fs.writeFile(path.join(dir, `${String(i).padStart(5, "0")}.json`), '{"id":"x","text":"other"}')))
+    const result = await f.run({ command: "search", query: "absent" })
+    expect(result).toContain("No matches")
+    expect(result).toContain("scan truncated")
+  }, 30000)
+
   test("legacy archives preserve original bytes and do not change Git status", async () => {
     const f = await fixture()
     await fs.mkdir(path.join(f.repo, "docs"))

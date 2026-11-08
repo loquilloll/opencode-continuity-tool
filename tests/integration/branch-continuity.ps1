@@ -3,10 +3,11 @@
 Preparation/transport only: this does NOT certify the plan's live acceptance matrix.
 Use primary/subagent prompts in the owned TUIs to exercise deliberate writes, isolation,
 shared reads, idle/manual/restart/races, conflicts, capacity and tool denial. Retain evidence.
-Credentials: supply an existing provider key through a caller/user environment variable
-(default Z_AI_API_KEY); configs contain only {env:...}, never its value. No auth export,
-production DB access, auth.json copying or login automation. A DB-only/OAuth credential
-is a BLOCKER until the operator supplies an appropriate key by an approved channel.
+Credentials: by default supply a provider key through a caller/user environment variable
+(default Z_AI_API_KEY); configs contain only {env:...}, never its value. Alternatively,
+-UseAuthJson explicitly copies ~/.local/share/opencode/auth.json into each isolated data
+root; Cleanup removes these copies. Protect the run directory and clean up after failures.
+No production DB access or login automation. Other DB-only credentials remain a blocker.
 The psmux child must see that variable too; an older psmux server may not inherit it.
 Capture is best-effort redacted: review artifacts before sharing. Never type secrets in TUI.
 #>
@@ -95,7 +96,7 @@ if ($Action -eq 'Validate' -or $DryRun -or $WhatIfPreference) {
     Action = $Action; RunRoot = $RunRoot; Bun = $bun; BunVersion = $bunVersion
     Opf18Source = Join-Path $v1Root 'src/index.ts'; Opf2xExecutable = $v2Exe
     Opf2xSHA256 = $exeHash; Plugin = $plugin; PluginPresent = (Test-Path $plugin)
-    Credentials = "Environment reference only: $CredentialEnv; DB-only auth blocks live generation"
+    Credentials = $(if ($UseAuthJson) { 'Copy auth.json into isolated data roots; Cleanup removes copies' } else { "Environment reference only: $CredentialEnv; DB-only auth blocks live generation" })
     LaunchBlockedUntil = 'Adapter/preflight verification and provider/model access confirmation'
   } | Format-List
   $rows | Format-Table Runtime, Checkout, Session, Database, Config -Wrap
@@ -105,7 +106,7 @@ if ($Action -eq 'Prepare') {
   if (Test-Path -LiteralPath $RunRoot) { throw 'Prepare requires a new run directory' }
   if (!$PSCmdlet.ShouldProcess($RunRoot, 'Prepare isolated live harness')) { return }
   New-Item -ItemType Directory -Path $RunRoot | Out-Null
-  @{ id = $id; root = $RunRoot; credentialEnv = $CredentialEnv; created = [DateTime]::UtcNow.ToString('o'); opf2xSHA256 = $exeHash } |
+  @{ id = $id; root = $RunRoot; credentialEnv = $CredentialEnv; useAuthJson = [bool]$UseAuthJson; created = [DateTime]::UtcNow.ToString('o'); opf2xSHA256 = $exeHash } |
     ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding utf8
   Git-Run @('init', '--initial-branch=branch-a', (Join-Path $RunRoot 'repo-a'))
   Git-Run @('-C', (Join-Path $RunRoot 'repo-a'), '-c', 'user.name=Continuity Harness', '-c', 'user.email=continuity@example.invalid', 'commit', '--allow-empty', '-m', 'Test-owned baseline')
@@ -161,8 +162,8 @@ if ($Action -eq 'Prepare') {
       "`$env:XDG_DATA_HOME = $(Quote-PS (Join-Path $root 'data'))"
       "`$env:XDG_STATE_HOME = $(Quote-PS (Join-Path $root 'state'))"
       "`$env:XDG_CACHE_HOME = $(Quote-PS (Join-Path $root 'cache'))"
-      # Env-key providers only; -UseAuthJson runs without any secret env propagation.
-      $(if ($CredentialEnv) {
+      # Auth-file mode does not require or explicitly propagate an environment key.
+      $(if (!$UseAuthJson -and $CredentialEnv) {
         @(
           "`$key = [Environment]::GetEnvironmentVariable($(Quote-PS $CredentialEnv), 'Process')",
           "if (!`$key) { `$key = [Environment]::GetEnvironmentVariable($(Quote-PS $CredentialEnv), 'User') }",
@@ -204,7 +205,7 @@ if ($Action -eq 'Launch') {
           Set-Content -LiteralPath $row.Runner -Encoding utf8
       }
       $runnerText = Get-Content -LiteralPath $row.Runner -Raw
-      if ($row.Runtime -eq 'opf2x' -and $owner.credentialEnv -eq 'Z_AI_API_KEY' -and !$runnerText.Contains('env:ZAI_API_KEY')) {
+      if ($row.Runtime -eq 'opf2x' -and !($owner.PSObject.Properties['useAuthJson'] -and $owner.useAuthJson) -and $owner.credentialEnv -eq 'Z_AI_API_KEY' -and !$runnerText.Contains('env:ZAI_API_KEY')) {
         # Native ZAICodingPlan AuthOptions.bearer expects ZAI_API_KEY; never serialize its value.
         $runnerText.Replace('Set-Location -LiteralPath',
           "`$env:ZAI_API_KEY = [Environment]::GetEnvironmentVariable($(Quote-PS $owner.credentialEnv), 'Process')`nSet-Location -LiteralPath") |

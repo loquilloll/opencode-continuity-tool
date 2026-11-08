@@ -67,7 +67,7 @@ function validateState(scope, state) {
       seen.add(source.sequence)
     }
   }
-  if (state.error !== null && (!object(state.error) || !nonempty(state.error.message) || !timestamp(state.error.at) || state.error.code !== undefined && !nonempty(state.error.code) || state.error.retryAt !== undefined && !timestamp(state.error.retryAt))) fail("error")
+  if (state.error !== null && (!object(state.error) || !nonempty(state.error.message) || !timestamp(state.error.at) || state.error.code !== undefined && !nonempty(state.error.code) || state.error.retryAt !== undefined && !timestamp(state.error.retryAt) || state.error.count !== undefined && (!integer(state.error.count) || state.error.count < 1))) fail("error")
   return state
 }
 export async function readState(scope) {

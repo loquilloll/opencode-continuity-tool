@@ -173,18 +173,22 @@ export function applyProposals(memory, output) {
   const shared = structuredClone(memory.shared);
   const conflicts = structuredClone(memory.conflicts);
   const resolveTarget = (targetId) => {
-    // Models transcribe uuids/hashes unreliably; exact match first, then a unique prefix.
-    // The resolved record is authoritative for the prior hash; ambiguity is rejected.
-    if (targetId === null) return null;
+    // Resolve an unambiguous prefix, but still require the matching prior hash.
+    if (typeof targetId !== "string" || !targetId) return null;
     const exact = shared.find((record) => record.id === targetId);
     if (exact) return exact;
     const prefixed = shared.filter((record) => record.id.startsWith(targetId));
     return prefixed.length === 1 ? prefixed[0] : undefined;
   };
-  for (const proposal of output.proposals) {
+  for (let proposal of output.proposals) {
     const target = proposal.operation === "add" ? null : resolveTarget(proposal.targetId);
     if (proposal.operation === "add") assert(proposal.targetId === null && proposal.priorHash === null && proposal.classification === "no-contradiction", "Add requires complete-baseline no-contradiction classification");
-    else assert(target, "Unknown target or stale prior hash");
+    else {
+      assert(target, "Unknown target or stale prior hash");
+      if (proposal.priorHash !== target.contentHash) {
+        proposal = { ...proposal, operation: "conflict", reason: `prior hash mismatch (${proposal.reason})` };
+      }
+    }
     if (proposal.operation === "conflict" || (proposal.operation === "update" && proposal.classification !== "equivalent")) {
       conflicts.push({ id: `conflict-${randomUUID()}`, targetId: target?.id ?? null, targetHash: target?.contentHash ?? null,
         proposal: proposal.text, reason: proposal.reason, citations: proposal.citations, status: "unresolved", resolution: null });
@@ -253,7 +257,6 @@ export async function runDistillation(scope, { generate, manual = false, workspa
       state.claim = claim;
       state.lastAttemptAt = stamp(started);
       state.nextEligibleAt = stamp(started + interval(state.epoch));
-      state.error = null;
       state.revision++;
       await storage.commit(scope, [stateWrite(scope, state)]);
       return { claim, memory, selected, prompt, model: settings(state.epoch.snapshot).model, conflictsRevision: memory.revisions.conflicts };
@@ -330,8 +333,11 @@ export async function runDistillation(scope, { generate, manual = false, workspa
         if (!acquired?.claim && state.claim && millis(state.claim.deadline) > started) return;
         state.claim = null;
         state.lastAttemptAt = stamp(started);
-        state.error = { message: error.message, at: stamp(started) };
-        state.nextEligibleAt = stamp(started + Math.max(state.epoch ? interval(state.epoch) : 3600000, 60000));
+        // Retain and back off consecutive failures to limit recurring paid attempts.
+        const repeated = Math.min((state.error?.count ?? 0) + 1, 7);
+        state.error = { message: error.message, at: stamp(started), count: repeated };
+        const base = state.epoch ? interval(state.epoch) : 3600000;
+        state.nextEligibleAt = stamp(started + Math.max(base, 60000, Math.min(base * 2 ** Math.min(repeated - 1, 6), 86400000)));
         state.revision++;
         await storage.commit(scope, [stateWrite(scope, state)]);
       });

@@ -37,6 +37,8 @@ Those line references describe the original run; the parent session is concurren
 
 ## DB isolation and launch prerequisites
 
+The harness defaults to an environment-variable credential reference. `Prepare -UseAuthJson` instead copies the user's `~/.local/share/opencode/auth.json` into both isolated runtime data roots; it does not require an environment key, though inherited environment variables are not cleared. The copies contain credentials and remain on disk until `Cleanup`, including after a failed preparation; restrict access to the run directory and run cleanup when finished. This does not import a production database. Authentication with the copied file has been verified for V1 only; V2 remains unverified.
+
 Verified system Bun reports **1.3.14**; `C:/Users/alvins/.local/opt/bun-1.4.4/bun.exe --version` reports **1.4.4**. Use explicit source entrypoints and pinned toolchains for later tests, not the production `opf18` / `opf2x` functions.
 
 - V1 `packages/core/src/database/database.ts:43-57`: `OPENCODE_DB` is checked first; absolute paths and `:memory:` pass through, relative names join `Global.Path.data`. Without it, `OPENCODE_DISABLE_CHANNEL_DB=1` reaches shared `opencode.db`.
